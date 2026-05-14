@@ -24,6 +24,7 @@
         <span class="meta" data-direction="morning"></span>
       </div>
       <div class="summary" data-direction="morning"></div>
+      <div class="alternatives" data-direction="morning"></div>
       <div class="heatmap-wrap"><div class="heatmap" data-direction="morning"></div></div>
     </div>
 
@@ -33,6 +34,7 @@
         <span class="meta" data-direction="evening"></span>
       </div>
       <div class="summary" data-direction="evening"></div>
+      <div class="alternatives" data-direction="evening"></div>
       <div class="heatmap-wrap"><div class="heatmap" data-direction="evening"></div></div>
     </div>
 
@@ -65,6 +67,9 @@
             <input name="m_interval" type="number" min="5" max="60" value="10" required>
           </label>
         </div>
+        <label>Arrive by (optional hard deadline)
+          <input name="m_deadline" type="time" placeholder="09:00">
+        </label>
       </fieldset>
 
       <fieldset>
@@ -80,6 +85,9 @@
             <input name="e_interval" type="number" min="5" max="60" value="10" required>
           </label>
         </div>
+        <label>Arrive by (optional hard deadline)
+          <input name="e_deadline" type="time" placeholder="(optional)">
+        </label>
       </fieldset>
 
       <fieldset>

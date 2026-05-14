@@ -30,6 +30,7 @@ def upsert_named_route(
     time_window_end: str,
     interval_minutes: int,
     weekdays: str,
+    arrival_deadline: str | None = None,
 ) -> int:
     """Deactivate any previous row with this name, insert a new active one."""
     with get_conn() as conn:
@@ -38,8 +39,8 @@ def upsert_named_route(
             """
             INSERT INTO routes
                 (name, origin, destination, time_window_start, time_window_end,
-                 interval_minutes, weekdays, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                 interval_minutes, weekdays, arrival_deadline, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 name,
@@ -49,6 +50,7 @@ def upsert_named_route(
                 time_window_end,
                 interval_minutes,
                 weekdays,
+                arrival_deadline,
             ),
         )
         return int(cur.lastrowid)

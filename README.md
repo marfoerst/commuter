@@ -11,12 +11,15 @@ dashboard, a notification system, a chat assistant — can consume the data.
 - Two named routes — `morning` (home → office) and `evening` (office → home),
   each with its own sampling window. Evening addresses are auto-reversed from
   morning.
+- **Hard arrival deadline** (optional, per direction). When set, the system
+  recommends the **latest safe departure** that still arrives in time, and
+  surfaces a top-3 alternatives strip ranked by departure time.
 - Google Routes API v2 (`computeRoutes`, traffic-aware) for live travel times
 - APScheduler runs a full weekly recompute every day at a configurable hour
   (default 04:00)
 - Live dashboard endpoint: every request makes two Routes API calls in
-  parallel — "leave now" and "best remaining slot today" — so the numbers
-  are fresh on every page view
+  parallel — "leave now" and the recommended slot — so the numbers are fresh
+  on every page view
 - SQLite persistence on a single bind-mounted volume
 - Single Docker container; runs anywhere Docker runs (tested on Synology
   Container Manager and Docker Desktop)
@@ -122,16 +125,21 @@ is stored automatically with the addresses reversed.
     "time_window_start": "07:00",
     "time_window_end":   "09:00",
     "interval_minutes":  10,
-    "weekdays": "Mon,Tue,Wed,Thu,Fri"
+    "weekdays": "Mon,Tue,Wed,Thu,Fri",
+    "arrival_deadline":  "09:00"
   },
   "evening": {
     "time_window_start": "16:00",
     "time_window_end":   "18:30",
     "interval_minutes":  10,
-    "weekdays": "Mon,Tue,Wed,Thu,Fri"
+    "weekdays": "Mon,Tue,Wed,Thu,Fri",
+    "arrival_deadline":  null
   }
 }
 ```
+
+`arrival_deadline` is optional. When set on a direction, that direction's
+recommendation becomes "the latest departure that still arrives by this time."
 
 ### `POST /api/recompute`
 
@@ -146,18 +154,30 @@ Live payload (Routes API queried at request time) for both directions:
 {
   "morning": {
     "name": "morning",
-    "best_departure_time": "07:10",
-    "optimal_duration": 28,
-    "current_duration": 42,
-    "time_savings": 14,
     "day_of_week": "Thu",
     "origin": "…",
     "destination": "…",
-    "live": true
+    "arrival_deadline": "09:00",
+    "best_departure_time": "08:00",
+    "optimal_duration": 59,
+    "arrival_time": "08:59",
+    "buffer_minutes": 1,
+    "current_duration": 42,
+    "time_savings": 14,
+    "live": true,
+    "alternatives": [
+      { "departure_time": "08:00", "duration_minutes": 59, "arrival_time": "08:59", "buffer_minutes": 1 },
+      { "departure_time": "07:50", "duration_minutes": 62, "arrival_time": "08:52", "buffer_minutes": 8 },
+      { "departure_time": "07:40", "duration_minutes": 64, "arrival_time": "08:44", "buffer_minutes": 16 }
+    ]
   },
-  "evening": { "…": "same shape" }
+  "evening": { "…": "same shape (no deadline → alternatives sorted by shortest drive)" }
 }
 ```
+
+`alternatives` is the top 3 candidate slots from today's snapshot, filtered
+by deadline if set, sorted latest-departure-first when a deadline applies and
+shortest-drive-first otherwise. `best_departure_time` is `alternatives[0]`.
 
 ### `GET /api/commute/today/{direction}`
 

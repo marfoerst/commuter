@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS routes (
     time_window_end TEXT NOT NULL DEFAULT '10:00',
     interval_minutes INTEGER NOT NULL DEFAULT 10,
     weekdays TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri',
+    arrival_deadline TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -41,6 +42,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "name" not in cols:
         conn.execute("ALTER TABLE routes ADD COLUMN name TEXT NOT NULL DEFAULT 'morning'")
         conn.execute("UPDATE routes SET name = 'morning' WHERE name IS NULL OR name = ''")
+    if "arrival_deadline" not in cols:
+        conn.execute("ALTER TABLE routes ADD COLUMN arrival_deadline TEXT")
 
 
 def init_db() -> None:

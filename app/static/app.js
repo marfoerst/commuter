@@ -31,9 +31,11 @@ async function loadConfig() {
   form.m_start.value = morning.time_window_start || "07:00";
   form.m_end.value = morning.time_window_end || "09:00";
   form.m_interval.value = morning.interval_minutes || 10;
+  form.m_deadline.value = morning.arrival_deadline || "";
   form.e_start.value = evening.time_window_start || "16:00";
   form.e_end.value = evening.time_window_end || "18:30";
   form.e_interval.value = evening.interval_minutes || 10;
+  form.e_deadline.value = evening.arrival_deadline || "";
   const weekdays = (morning.weekdays || "Mon,Tue,Wed,Thu,Fri")
     .split(",")
     .map((s) => s.trim());
@@ -57,12 +59,14 @@ function readForm() {
       time_window_end: fd.get("m_end"),
       interval_minutes: parseInt(fd.get("m_interval"), 10),
       weekdays,
+      arrival_deadline: fd.get("m_deadline") || null,
     },
     evening: {
       time_window_start: fd.get("e_start"),
       time_window_end: fd.get("e_end"),
       interval_minutes: parseInt(fd.get("e_interval"), 10),
       weekdays,
+      arrival_deadline: fd.get("e_deadline") || null,
     },
   };
 }
@@ -136,33 +140,89 @@ function renderSummary(direction, d) {
     metaTarget.textContent = d?.error || "";
     return;
   }
-  const savings = d.time_savings ?? 0;
-  let deltaCls = savings > 0 ? "save" : savings < 0 ? "loss" : "";
-  let deltaText;
-  if (savings > 0) deltaText = `Save ${savings} min`;
-  else if (savings < 0) deltaText = `+${Math.abs(savings)} min slower`;
-  else deltaText = `On par`;
-
+  const hasDeadline = d.arrival_deadline != null && d.arrival_deadline !== "";
+  const bestLabel = hasDeadline
+    ? `Latest safe departure (${d.day_of_week})`
+    : `Best departure (${d.day_of_week})`;
+  let fourthCard;
+  if (hasDeadline) {
+    const buf = d.buffer_minutes;
+    let bufCls = "";
+    let bufText;
+    if (buf == null) bufText = "—";
+    else if (buf <= 0) { bufCls = "loss"; bufText = `${buf} min`; }
+    else if (buf < 10) { bufCls = "save"; bufText = `${buf} min`; }
+    else { bufCls = "save"; bufText = `${buf} min`; }
+    fourthCard = `
+      <div class="card">
+        <div class="label">Buffer vs ${d.arrival_deadline} deadline</div>
+        <div class="value delta ${bufCls}">${bufText}</div>
+      </div>`;
+  } else {
+    const savings = d.time_savings ?? 0;
+    let deltaCls = savings > 0 ? "save" : savings < 0 ? "loss" : "";
+    let deltaText;
+    if (savings > 0) deltaText = `Save ${savings} min`;
+    else if (savings < 0) deltaText = `+${Math.abs(savings)} min slower`;
+    else deltaText = `On par`;
+    fourthCard = `
+      <div class="card">
+        <div class="label">Wait-to-leave benefit</div>
+        <div class="value delta ${deltaCls}">${deltaText}</div>
+      </div>`;
+  }
   target.innerHTML = `
     <div class="card">
-      <div class="label">Best departure (${d.day_of_week})</div>
+      <div class="label">${bestLabel}</div>
       <div class="value">${d.best_departure_time}</div>
     </div>
     <div class="card">
-      <div class="label">Optimal duration</div>
+      <div class="label">Drive time</div>
       <div class="value">${d.optimal_duration} min</div>
     </div>
     <div class="card">
-      <div class="label">If you leave now</div>
-      <div class="value">${d.current_duration} min</div>
+      <div class="label">${hasDeadline ? "Predicted arrival" : "If you leave now"}</div>
+      <div class="value">${hasDeadline ? d.arrival_time : d.current_duration + " min"}</div>
     </div>
-    <div class="card">
-      <div class="label">Wait-to-leave benefit</div>
-      <div class="value delta ${deltaCls}">${deltaText}</div>
-    </div>
+    ${fourthCard}
   `;
   const note = d.note ? ` · ${d.note}` : "";
   metaTarget.textContent = `${d.origin}  →  ${d.destination}${note}`;
+}
+
+function renderAlternatives(direction, d) {
+  const target = document.querySelector(`.alternatives[data-direction="${direction}"]`);
+  if (!target) return;
+  const alts = d?.alternatives;
+  if (!alts || alts.length === 0) {
+    target.innerHTML = "";
+    return;
+  }
+  const hasDeadline = d.arrival_deadline != null && d.arrival_deadline !== "";
+  const title = hasDeadline
+    ? `Top departures arriving by ${d.arrival_deadline}`
+    : "Next-best slots";
+
+  const rows = alts.map((a, i) => {
+    let bufHtml = "";
+    if (a.buffer_minutes != null) {
+      let cls = "";
+      if (a.buffer_minutes <= 0) cls = "zero";
+      else if (a.buffer_minutes < 10) cls = "tight";
+      bufHtml = `<div class="alt-buffer ${cls}"><div class="alt-label">Buffer</div><div class="alt-value">${a.buffer_minutes} min</div></div>`;
+    } else {
+      bufHtml = `<div><div class="alt-label">Arrival</div><div class="alt-value">${a.arrival_time}</div></div>`;
+    }
+    return `
+      <div class="alt-row ${i === 0 ? "top" : ""}">
+        <div class="alt-time">${a.departure_time}</div>
+        <div><div class="alt-label">Drive</div><div class="alt-value">${a.duration_minutes} min</div></div>
+        <div><div class="alt-label">Arrival</div><div class="alt-value">${a.arrival_time}</div></div>
+        ${bufHtml}
+      </div>`;
+  }).join("");
+
+  target.innerHTML = `<h3>${title}</h3><div class="alt-grid">${rows}</div>`;
 }
 
 function renderHeatmap(direction, data) {
@@ -217,7 +277,10 @@ async function loadToday() {
     return;
   }
   const data = await r.json();
-  DIRECTIONS.forEach((dir) => renderSummary(dir, data[dir]));
+  DIRECTIONS.forEach((dir) => {
+    renderSummary(dir, data[dir]);
+    renderAlternatives(dir, data[dir]);
+  });
 }
 
 async function loadHeatmap() {

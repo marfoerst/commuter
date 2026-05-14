@@ -54,6 +54,30 @@ h2 {
 .card .delta.save { color: #5fd07a; }
 .card .delta.loss { color: #ff7676; }
 
+.alternatives {
+  background: #161922; border: 1px solid #222831; border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 16px;
+}
+.alternatives h3 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #9aa0a6; font-weight: 600; margin: 0 0 10px;
+}
+.alt-grid { display: grid; gap: 6px; }
+.alt-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 1fr 1fr;
+  gap: 16px; align-items: baseline;
+  padding: 6px 0; font-variant-numeric: tabular-nums;
+  border-top: 1px solid #1f232b;
+}
+.alt-row:first-child { border-top: 0; }
+.alt-row.top { color: #5fd07a; font-weight: 600; }
+.alt-time { font-size: 16px; }
+.alt-label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; }
+.alt-value { font-size: 13px; }
+.alt-buffer.tight { color: #f5b347; }
+.alt-buffer.zero { color: #ff7676; }
+.alt-empty { font-size: 13px; color: #9aa0a6; }
 .heatmap-wrap { overflow-x: auto; }
 .heatmap { display: grid; gap: 2px; min-width: max-content; }
 .heatmap-row { display: grid; gap: 2px; }
