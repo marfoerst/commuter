@@ -191,13 +191,18 @@ def _compute_candidates(
     return out, deadline_dt
 
 
+TOP_N_LIVE = 3
+
+
 async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     """Compute the live 'today' payload for a single named route.
 
     - Use the daily snapshot to find feasible candidate slots today.
-    - "Best" = candidates[0] (latest safe if deadline set; else shortest drive).
-    - Fire 2 live Routes API calls in parallel: leave-now and the best slot.
-    - Return alternatives (top 3) for the dashboard / consumer to display.
+    - Fire live Routes API calls in parallel for leave-now AND each of the
+      top-N snapshot candidates. Re-rank by live duration (since real-time
+      traffic / incidents can flip the ranking).
+    - After re-rank, the top-1 becomes the recommended "best".
+    - Alternatives returned in the payload use the live durations.
     """
     now = datetime.now().astimezone()
     today_weekday = WEEKDAYS[now.weekday()]
@@ -205,21 +210,21 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     live_now_dt = now + timedelta(seconds=30)
     deadline_str = route.get("arrival_deadline")
 
-    candidates, deadline_dt = _compute_candidates(day_data, now, deadline_str)
-    best = candidates[0] if candidates else None
-    best_dt = best["_dep_dt"] if best else None
+    snapshot_candidates, deadline_dt = _compute_candidates(day_data, now, deadline_str)
+    # Pre-select up to N candidates worth querying live.
+    pre_top = snapshot_candidates[:TOP_N_LIVE]
 
-    # Fire live Routes API calls in parallel.
+    # Live calls: leave-now + each pre-top candidate, all in parallel.
     tasks = [
         compute_route_duration(client, route["origin"], route["destination"], live_now_dt)
     ]
-    if best_dt is not None:
-        tasks.append(
-            compute_route_duration(client, route["origin"], route["destination"], best_dt)
-        )
+    tasks.extend(
+        compute_route_duration(client, route["origin"], route["destination"], c["_dep_dt"])
+        for c in pre_top
+    )
     results = await asyncio.gather(*tasks)
     current_live = results[0]
-    optimal_live = results[1] if len(results) > 1 else None
+    live_durations = results[1:]
 
     if current_live is None and day_data:
         fallback = _pick_current_slot(day_data, now.replace(tzinfo=None))
@@ -232,6 +237,36 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
             "destination": route["destination"],
         }
 
+    # Build live-updated candidate dicts, re-filter against deadline, re-rank.
+    live_candidates: list[dict] = []
+    for c, live_dur in zip(pre_top, live_durations):
+        dur = live_dur if live_dur is not None else c["duration_minutes"]
+        arrival = c["_dep_dt"] + timedelta(minutes=float(dur))
+        if deadline_dt and arrival > deadline_dt:
+            continue  # live conditions invalidate this option
+        buffer_min = (
+            int(round((deadline_dt - arrival).total_seconds() / 60))
+            if deadline_dt
+            else None
+        )
+        live_candidates.append(
+            {
+                "departure_time": c["departure_time"],
+                "duration_minutes": round(float(dur)),
+                "arrival_time": arrival.strftime("%H:%M"),
+                "buffer_minutes": buffer_min,
+                "live": live_dur is not None,
+                "_dep_dt": c["_dep_dt"],
+            }
+        )
+
+    # Re-rank using live data: latest safe first (with deadline) or shortest
+    # drive first (without).
+    if deadline_dt:
+        live_candidates.sort(key=lambda c: c["departure_time"], reverse=True)
+    else:
+        live_candidates.sort(key=lambda c: c["duration_minutes"])
+
     payload: dict = {
         "name": route["name"],
         "day_of_week": today_weekday,
@@ -242,10 +277,9 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
         "live": True,
     }
 
-    if best is None:
-        # No feasible slot remaining today.
+    if not live_candidates:
         reason = (
-            "Every remaining slot arrives after the deadline."
+            "Every remaining slot arrives after the deadline (live)."
             if deadline_dt
             else "No recommended departure remaining today."
         )
@@ -262,28 +296,16 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
         )
         return payload
 
-    if optimal_live is None:
-        optimal_live = best["duration_minutes"]
-
-    # Recompute the best candidate's arrival/buffer using live duration.
-    best_arrival_dt = best_dt + timedelta(minutes=float(optimal_live))
-    best_buffer: int | None = None
-    if deadline_dt:
-        best_buffer = int(round((deadline_dt - best_arrival_dt).total_seconds() / 60))
-
-    # Strip internal _dep_dt from the alternatives we return.
-    alt_out = [
-        {k: v for k, v in c.items() if not k.startswith("_")}
-        for c in candidates[:3]
-    ]
+    best = live_candidates[0]
+    alt_out = [{k: v for k, v in c.items() if not k.startswith("_")} for c in live_candidates]
 
     payload.update(
         {
             "best_departure_time": best["departure_time"],
-            "optimal_duration": round(optimal_live),
-            "arrival_time": best_arrival_dt.strftime("%H:%M"),
-            "buffer_minutes": best_buffer,
-            "time_savings": round(current_live - optimal_live),
+            "optimal_duration": best["duration_minutes"],
+            "arrival_time": best["arrival_time"],
+            "buffer_minutes": best["buffer_minutes"],
+            "time_savings": round(current_live - best["duration_minutes"]),
             "alternatives": alt_out,
         }
     )
