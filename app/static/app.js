@@ -213,10 +213,16 @@ function renderAlternatives(direction, d) {
     } else {
       bufHtml = `<div><div class="alt-label">Arrival</div><div class="alt-value">${a.arrival_time}</div></div>`;
     }
+    let deltaTag = "";
+    if (a.delta_minutes != null && a.delta_minutes !== 0) {
+      const sign = a.delta_minutes > 0 ? "+" : "";
+      const cls = a.incident_severity || "";
+      deltaTag = `<span class="alt-delta ${cls}">${sign}${a.delta_minutes} vs forecast</span>`;
+    }
     return `
       <div class="alt-row ${i === 0 ? "top" : ""}">
         <div class="alt-time">${a.departure_time}</div>
-        <div><div class="alt-label">Drive</div><div class="alt-value">${a.duration_minutes} min</div></div>
+        <div><div class="alt-label">Drive</div><div class="alt-value">${a.duration_minutes} min${deltaTag}</div></div>
         <div><div class="alt-label">Arrival</div><div class="alt-value">${a.arrival_time}</div></div>
         ${bufHtml}
       </div>`;
@@ -278,9 +284,21 @@ async function loadToday() {
   }
   const data = await r.json();
   DIRECTIONS.forEach((dir) => {
+    renderIncidentBanner(dir, data[dir]);
     renderSummary(dir, data[dir]);
     renderAlternatives(dir, data[dir]);
   });
+}
+
+function renderIncidentBanner(direction, d) {
+  const el = document.querySelector(`.incident-banner[data-direction="${direction}"]`);
+  if (!el) return;
+  const sev = d?.incident_severity;
+  if (!sev || sev === "clear") { el.style.display = "none"; return; }
+  el.style.display = "block";
+  el.className = `incident-banner ${sev}`;
+  const icon = sev === "alert" ? "⚠" : "▲";
+  el.innerHTML = `<span class="icon">${icon}</span>${d.incident_note || ""}`;
 }
 
 async function loadHeatmap() {

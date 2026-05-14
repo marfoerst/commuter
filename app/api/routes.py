@@ -192,6 +192,33 @@ def _compute_candidates(
 
 
 TOP_N_LIVE = 3
+INCIDENT_ALERT_DELTA_MIN = 20
+INCIDENT_WATCH_DELTA_MIN = 10
+INCIDENT_ALERT_RATIO = 1.5
+
+
+def _classify_incident(live_dur: float | None, snapshot_dur: float) -> tuple[str, int]:
+    """Compare live to snapshot. Returns (severity, delta_minutes).
+
+    severity in {"clear", "watch", "alert"}; delta is round(live - snapshot).
+    """
+    if live_dur is None:
+        return "clear", 0
+    delta = int(round(float(live_dur) - float(snapshot_dur)))
+    ratio = float(live_dur) / float(snapshot_dur) if snapshot_dur > 0 else 1.0
+    if delta >= INCIDENT_ALERT_DELTA_MIN or ratio >= INCIDENT_ALERT_RATIO:
+        return "alert", delta
+    if delta >= INCIDENT_WATCH_DELTA_MIN:
+        return "watch", delta
+    return "clear", delta
+
+
+def _incident_note(severity: str, delta: int) -> str:
+    if severity == "alert":
+        return f"Live drive is +{delta} min vs morning forecast. Likely incident on route."
+    if severity == "watch":
+        return f"Heavier traffic than forecast (+{delta} min)."
+    return "Conditions normal."
 
 
 async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
@@ -240,8 +267,9 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     # Build live-updated candidate dicts, re-filter against deadline, re-rank.
     live_candidates: list[dict] = []
     for c, live_dur in zip(pre_top, live_durations):
-        dur = live_dur if live_dur is not None else c["duration_minutes"]
-        arrival = c["_dep_dt"] + timedelta(minutes=float(dur))
+        snapshot_dur = float(c["duration_minutes"])
+        dur = float(live_dur) if live_dur is not None else snapshot_dur
+        arrival = c["_dep_dt"] + timedelta(minutes=dur)
         if deadline_dt and arrival > deadline_dt:
             continue  # live conditions invalidate this option
         buffer_min = (
@@ -249,13 +277,17 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
             if deadline_dt
             else None
         )
+        severity, delta = _classify_incident(live_dur, snapshot_dur)
         live_candidates.append(
             {
                 "departure_time": c["departure_time"],
-                "duration_minutes": round(float(dur)),
+                "duration_minutes": round(dur),
+                "snapshot_duration_minutes": round(snapshot_dur),
                 "arrival_time": arrival.strftime("%H:%M"),
                 "buffer_minutes": buffer_min,
                 "live": live_dur is not None,
+                "delta_minutes": delta,
+                "incident_severity": severity,
                 "_dep_dt": c["_dep_dt"],
             }
         )
@@ -299,6 +331,12 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     best = live_candidates[0]
     alt_out = [{k: v for k, v in c.items() if not k.startswith("_")} for c in live_candidates]
 
+    # Worst incident signal across all top candidates — alert beats watch beats clear.
+    rank = {"alert": 2, "watch": 1, "clear": 0}
+    worst = max(live_candidates, key=lambda c: rank[c["incident_severity"]])
+    worst_sev = worst["incident_severity"]
+    worst_delta = worst["delta_minutes"]
+
     payload.update(
         {
             "best_departure_time": best["departure_time"],
@@ -307,6 +345,9 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
             "buffer_minutes": best["buffer_minutes"],
             "time_savings": round(current_live - best["duration_minutes"]),
             "alternatives": alt_out,
+            "incident_severity": worst_sev,
+            "incident_delta_minutes": worst_delta,
+            "incident_note": _incident_note(worst_sev, worst_delta),
         }
     )
     return payload

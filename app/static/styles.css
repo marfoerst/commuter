@@ -78,6 +78,16 @@ h2 {
 .alt-buffer.tight { color: #f5b347; }
 .alt-buffer.zero { color: #ff7676; }
 .alt-empty { font-size: 13px; color: #9aa0a6; }
+.alt-delta { font-size: 11px; color: #9aa0a6; margin-left: 6px; }
+.alt-delta.watch { color: #f5b347; }
+.alt-delta.alert { color: #ff7676; }
+.incident-banner {
+  margin-bottom: 12px; padding: 10px 14px; border-radius: 8px;
+  font-size: 13px; border: 1px solid transparent;
+}
+.incident-banner.watch { background: #2c2417; color: #f5b347; border-color: #4a3a1f; }
+.incident-banner.alert { background: #2c1717; color: #ff7676; border-color: #4a1f1f; }
+.incident-banner .icon { margin-right: 6px; }
 .heatmap-wrap { overflow-x: auto; }
 .heatmap { display: grid; gap: 2px; min-width: max-content; }
 .heatmap-row { display: grid; gap: 2px; }
