@@ -1,0 +1,238 @@
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DIRECTIONS = ["morning", "evening"];
+
+const form = document.getElementById("config-form");
+const statusEl = document.getElementById("status");
+
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((b) =>
+      b.classList.toggle("active", b === btn)
+    );
+    document.querySelectorAll(".panel").forEach((p) =>
+      p.classList.toggle("active", p.id === btn.dataset.tab)
+    );
+  });
+});
+
+function setStatus(msg) {
+  statusEl.textContent = msg || "";
+}
+
+async function loadConfig() {
+  const r = await fetch("/api/config");
+  if (!r.ok) return;
+  const cfg = await r.json();
+  if (!cfg) return;
+  const morning = cfg.morning || {};
+  const evening = cfg.evening || {};
+  form.origin.value = morning.origin || "";
+  form.destination.value = morning.destination || "";
+  form.m_start.value = morning.time_window_start || "07:00";
+  form.m_end.value = morning.time_window_end || "09:00";
+  form.m_interval.value = morning.interval_minutes || 10;
+  form.e_start.value = evening.time_window_start || "16:00";
+  form.e_end.value = evening.time_window_end || "18:30";
+  form.e_interval.value = evening.interval_minutes || 10;
+  const weekdays = (morning.weekdays || "Mon,Tue,Wed,Thu,Fri")
+    .split(",")
+    .map((s) => s.trim());
+  document.querySelectorAll("input[name='weekdays']").forEach((cb) => {
+    cb.checked = weekdays.includes(cb.value);
+  });
+}
+
+function readForm() {
+  const fd = new FormData(form);
+  const weekdays = Array.from(
+    form.querySelectorAll("input[name='weekdays']:checked")
+  )
+    .map((cb) => cb.value)
+    .join(",");
+  return {
+    origin: fd.get("origin"),
+    destination: fd.get("destination"),
+    morning: {
+      time_window_start: fd.get("m_start"),
+      time_window_end: fd.get("m_end"),
+      interval_minutes: parseInt(fd.get("m_interval"), 10),
+      weekdays,
+    },
+    evening: {
+      time_window_start: fd.get("e_start"),
+      time_window_end: fd.get("e_end"),
+      interval_minutes: parseInt(fd.get("e_interval"), 10),
+      weekdays,
+    },
+  };
+}
+
+async function saveConfig() {
+  const body = readForm();
+  if (!body.origin || !body.destination) {
+    setStatus("Home and Office addresses are required.");
+    return false;
+  }
+  if (!body.morning.weekdays) {
+    setStatus("Select at least one weekday.");
+    return false;
+  }
+  setStatus("Saving…");
+  const r = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setStatus("Save failed: " + (err.detail || r.statusText));
+    return false;
+  }
+  setStatus("Saved.");
+  return true;
+}
+
+async function triggerRecompute() {
+  setStatus("Recomputing both directions… (15–60 seconds)");
+  const r = await fetch("/api/recompute", { method: "POST" });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setStatus("Recompute failed: " + (err.detail || r.statusText));
+    return;
+  }
+  const data = await r.json();
+  const m = data.samples?.morning ?? 0;
+  const e = data.samples?.evening ?? 0;
+  setStatus(`Done. Morning: ${m} samples · Evening: ${e} samples.`);
+  await loadAll();
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (await saveConfig()) loadAll();
+});
+
+document.getElementById("recompute-btn").addEventListener("click", async () => {
+  if (!(await saveConfig())) return;
+  await triggerRecompute();
+});
+
+document.getElementById("recompute-top").addEventListener("click", async () => {
+  await triggerRecompute();
+});
+
+function colorFor(value, min, max) {
+  if (max === min) return "hsl(120, 60%, 38%)";
+  const t = (value - min) / (max - min);
+  const hue = 120 * (1 - t);
+  return `hsl(${hue}, 65%, 40%)`;
+}
+
+function renderSummary(direction, d) {
+  const target = document.querySelector(`.summary[data-direction="${direction}"]`);
+  const metaTarget = document.querySelector(`.meta[data-direction="${direction}"]`);
+  if (!d || d.error) {
+    target.innerHTML = `<div class='card'><div class='label'>No data yet</div><div class='value'>—</div></div>`;
+    metaTarget.textContent = d?.error || "";
+    return;
+  }
+  const savings = d.time_savings ?? 0;
+  let deltaCls = savings > 0 ? "save" : savings < 0 ? "loss" : "";
+  let deltaText;
+  if (savings > 0) deltaText = `Save ${savings} min`;
+  else if (savings < 0) deltaText = `+${Math.abs(savings)} min slower`;
+  else deltaText = `On par`;
+
+  target.innerHTML = `
+    <div class="card">
+      <div class="label">Best departure (${d.day_of_week})</div>
+      <div class="value">${d.best_departure_time}</div>
+    </div>
+    <div class="card">
+      <div class="label">Optimal duration</div>
+      <div class="value">${d.optimal_duration} min</div>
+    </div>
+    <div class="card">
+      <div class="label">If you leave now</div>
+      <div class="value">${d.current_duration} min</div>
+    </div>
+    <div class="card">
+      <div class="label">Wait-to-leave benefit</div>
+      <div class="value delta ${deltaCls}">${deltaText}</div>
+    </div>
+  `;
+  const note = d.note ? ` · ${d.note}` : "";
+  metaTarget.textContent = `${d.origin}  →  ${d.destination}${note}`;
+}
+
+function renderHeatmap(direction, data) {
+  const container = document.querySelector(`.heatmap[data-direction="${direction}"]`);
+  if (!data || !data.length) {
+    container.innerHTML = "<p class='hint'>No heatmap data yet.</p>";
+    return;
+  }
+  const times = [...new Set(data.map((d) => d.time))].sort();
+  const days = WEEKDAYS.filter((d) => data.some((x) => x.day === d));
+  const lookup = {};
+  data.forEach((d) => {
+    lookup[`${d.day}|${d.time}`] = d.duration;
+  });
+  const values = data.map((d) => d.duration);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const colStyle = `grid-template-columns: 56px repeat(${times.length}, minmax(40px, 1fr));`;
+
+  const parts = [];
+  parts.push(`<div class="heatmap-row" style="${colStyle}">`);
+  parts.push(`<div class="heatmap-label"></div>`);
+  times.forEach((t) => parts.push(`<div class="heatmap-label">${t}</div>`));
+  parts.push(`</div>`);
+
+  days.forEach((day) => {
+    parts.push(`<div class="heatmap-row" style="${colStyle}">`);
+    parts.push(`<div class="heatmap-label row">${day}</div>`);
+    times.forEach((t) => {
+      const v = lookup[`${day}|${t}`];
+      if (v == null) {
+        parts.push(`<div class="heatmap-cell empty"></div>`);
+      } else {
+        const c = colorFor(v, min, max);
+        parts.push(
+          `<div class="heatmap-cell" style="background:${c}" title="${day} ${t} — ${v} min">${Math.round(
+            v
+          )}</div>`
+        );
+      }
+    });
+    parts.push(`</div>`);
+  });
+
+  container.innerHTML = parts.join("");
+}
+
+async function loadToday() {
+  const r = await fetch("/api/commute/today");
+  if (!r.ok) {
+    DIRECTIONS.forEach((dir) => renderSummary(dir, null));
+    return;
+  }
+  const data = await r.json();
+  DIRECTIONS.forEach((dir) => renderSummary(dir, data[dir]));
+}
+
+async function loadHeatmap() {
+  const r = await fetch("/api/commute/heatmap");
+  if (!r.ok) {
+    DIRECTIONS.forEach((dir) => renderHeatmap(dir, null));
+    return;
+  }
+  const data = await r.json();
+  DIRECTIONS.forEach((dir) => renderHeatmap(dir, data[dir] || []));
+}
+
+async function loadAll() {
+  await Promise.all([loadToday(), loadHeatmap()]);
+}
+
+loadConfig();
+loadAll();

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Commute Optimizer</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header>
+  <h1>Commute Optimizer</h1>
+  <nav>
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="setup">Setup</button>
+  </nav>
+  <button id="recompute-top" class="ghost" title="Sample now using the saved route">Recompute</button>
+</header>
+
+<main>
+  <section id="dashboard" class="panel active">
+    <div id="direction-morning" class="direction">
+      <div class="direction-head">
+        <h2>Morning &nbsp;·&nbsp; Home → Office</h2>
+        <span class="meta" data-direction="morning"></span>
+      </div>
+      <div class="summary" data-direction="morning"></div>
+      <div class="heatmap-wrap"><div class="heatmap" data-direction="morning"></div></div>
+    </div>
+
+    <div id="direction-evening" class="direction">
+      <div class="direction-head">
+        <h2>Evening &nbsp;·&nbsp; Office → Home</h2>
+        <span class="meta" data-direction="evening"></span>
+      </div>
+      <div class="summary" data-direction="evening"></div>
+      <div class="heatmap-wrap"><div class="heatmap" data-direction="evening"></div></div>
+    </div>
+
+    <p class="hint">Hover a heatmap cell for exact duration. Green = fast, red = slow.</p>
+  </section>
+
+  <section id="setup" class="panel">
+    <form id="config-form">
+      <fieldset class="addresses">
+        <legend>Home &amp; Office</legend>
+        <label>Home (origin in the morning)
+          <input name="origin" required placeholder="e.g. 123 Main St, Berlin">
+        </label>
+        <label>Office (destination in the morning)
+          <input name="destination" required placeholder="e.g. Alexanderplatz, Berlin">
+        </label>
+        <p class="hint">The evening route automatically uses the reverse: Office → Home.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Morning window (Home → Office)</legend>
+        <div class="row">
+          <label>Start
+            <input name="m_start" type="time" value="07:00" required>
+          </label>
+          <label>End
+            <input name="m_end" type="time" value="09:00" required>
+          </label>
+          <label>Interval (min)
+            <input name="m_interval" type="number" min="5" max="60" value="10" required>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Evening window (Office → Home)</legend>
+        <div class="row">
+          <label>Start
+            <input name="e_start" type="time" value="16:00" required>
+          </label>
+          <label>End
+            <input name="e_end" type="time" value="18:30" required>
+          </label>
+          <label>Interval (min)
+            <input name="e_interval" type="number" min="5" max="60" value="10" required>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Weekdays</legend>
+        <label class="inline"><input type="checkbox" name="weekdays" value="Mon" checked> Mon</label>
+        <label class="inline"><input type="checkbox" name="weekdays" value="Tue" checked> Tue</label>
+        <label class="inline"><input type="checkbox" name="weekdays" value="Wed" checked> Wed</label>
+        <label class="inline"><input type="checkbox" name="weekdays" value="Thu" checked> Thu</label>
+        <label class="inline"><input type="checkbox" name="weekdays" value="Fri" checked> Fri</label>
+        <label class="inline"><input type="checkbox" name="weekdays" value="Sat"> Sat</label>
+        <label class="inline"><input type="checkbox" name="weekdays" value="Sun"> Sun</label>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit">Save</button>
+        <button type="button" id="recompute-btn">Save &amp; Recompute now</button>
+      </div>
+      <p id="status" class="status"></p>
+    </form>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

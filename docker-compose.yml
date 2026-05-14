@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  commute-optimizer:
+    build: .
+    container_name: commute-optimizer
+    ports:
+      - "8080:8080"
+    environment:
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      DEFAULT_ORIGIN: ${DEFAULT_ORIGIN:-}
+      DEFAULT_DESTINATION: ${DEFAULT_DESTINATION:-}
+      TIME_WINDOW_START: ${TIME_WINDOW_START:-07:00}
+      TIME_WINDOW_END: ${TIME_WINDOW_END:-09:00}
+      EVENING_TIME_WINDOW_START: ${EVENING_TIME_WINDOW_START:-16:00}
+      EVENING_TIME_WINDOW_END: ${EVENING_TIME_WINDOW_END:-18:30}
+      INTERVAL_MINUTES: ${INTERVAL_MINUTES:-10}
+      DEFAULT_WEEKDAYS: ${DEFAULT_WEEKDAYS:-Mon,Tue,Wed,Thu,Fri}
+      SCHEDULER_HOUR: ${SCHEDULER_HOUR:-4}
+      SCHEDULER_MINUTE: ${SCHEDULER_MINUTE:-0}
+      CONCURRENT_REQUESTS: ${CONCURRENT_REQUESTS:-10}
+      API_KEY: ${API_KEY:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
