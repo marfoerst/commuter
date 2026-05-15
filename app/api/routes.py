@@ -192,9 +192,41 @@ def _compute_candidates(
 
 
 TOP_N_LIVE = 3
+MAX_PROBE_BATCHES = 3  # incident fallback: keep probing earlier slots in batches of TOP_N_LIVE
 INCIDENT_ALERT_DELTA_MIN = 20
 INCIDENT_WATCH_DELTA_MIN = 10
 INCIDENT_ALERT_RATIO = 1.5
+
+
+def _build_live_candidate(
+    c: dict, live_dur: float | None, deadline_dt: datetime | None
+) -> dict | None:
+    """Convert a snapshot candidate + live duration into the return shape.
+
+    Returns None if the live arrival violates the deadline (filtered out).
+    """
+    snapshot_dur = float(c["duration_minutes"])
+    dur = float(live_dur) if live_dur is not None else snapshot_dur
+    arrival = c["_dep_dt"] + timedelta(minutes=dur)
+    if deadline_dt and arrival > deadline_dt:
+        return None
+    buffer_min = (
+        int(round((deadline_dt - arrival).total_seconds() / 60))
+        if deadline_dt
+        else None
+    )
+    severity, delta = _classify_incident(live_dur, snapshot_dur)
+    return {
+        "departure_time": c["departure_time"],
+        "duration_minutes": round(dur),
+        "snapshot_duration_minutes": round(snapshot_dur),
+        "arrival_time": arrival.strftime("%H:%M"),
+        "buffer_minutes": buffer_min,
+        "live": live_dur is not None,
+        "delta_minutes": delta,
+        "incident_severity": severity,
+        "_dep_dt": c["_dep_dt"],
+    }
 
 
 def _classify_incident(live_dur: float | None, snapshot_dur: float) -> tuple[str, int]:
@@ -238,20 +270,53 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     deadline_str = route.get("arrival_deadline")
 
     snapshot_candidates, deadline_dt = _compute_candidates(day_data, now, deadline_str)
-    # Pre-select up to N candidates worth querying live.
-    pre_top = snapshot_candidates[:TOP_N_LIVE]
 
-    # Live calls: leave-now + each pre-top candidate, all in parallel.
+    # First batch: top N (latest-safe or shortest-drive). Always fire leave-now
+    # in parallel with this first batch.
+    first_batch = snapshot_candidates[:TOP_N_LIVE]
+    remaining = snapshot_candidates[TOP_N_LIVE:]
     tasks = [
         compute_route_duration(client, route["origin"], route["destination"], live_now_dt)
     ]
     tasks.extend(
         compute_route_duration(client, route["origin"], route["destination"], c["_dep_dt"])
-        for c in pre_top
+        for c in first_batch
     )
     results = await asyncio.gather(*tasks)
     current_live = results[0]
-    live_durations = results[1:]
+
+    live_candidates: list[dict] = []
+    probed: list[dict] = []
+    for c, live_dur in zip(first_batch, results[1:]):
+        probed.append({"_c": c, "_live": live_dur})
+        built = _build_live_candidate(c, live_dur, deadline_dt)
+        if built is not None:
+            live_candidates.append(built)
+
+    # Expand-on-failure: if the first batch yielded no feasible candidates and a
+    # deadline is set, probe earlier batches (the snapshot order is latest-first
+    # with a deadline, so "earlier" = later in the list). Cap at MAX_PROBE_BATCHES.
+    probe_count = 1
+    while (
+        not live_candidates
+        and deadline_dt is not None
+        and remaining
+        and probe_count < MAX_PROBE_BATCHES
+    ):
+        next_batch = remaining[:TOP_N_LIVE]
+        remaining = remaining[TOP_N_LIVE:]
+        durs = await asyncio.gather(
+            *[
+                compute_route_duration(client, route["origin"], route["destination"], c["_dep_dt"])
+                for c in next_batch
+            ]
+        )
+        for c, live_dur in zip(next_batch, durs):
+            probed.append({"_c": c, "_live": live_dur})
+            built = _build_live_candidate(c, live_dur, deadline_dt)
+            if built is not None:
+                live_candidates.append(built)
+        probe_count += 1
 
     if current_live is None and day_data:
         fallback = _pick_current_slot(day_data, now.replace(tzinfo=None))
@@ -264,40 +329,14 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
             "destination": route["destination"],
         }
 
-    # Build live-updated candidate dicts, re-filter against deadline, re-rank.
-    live_candidates: list[dict] = []
-    for c, live_dur in zip(pre_top, live_durations):
-        snapshot_dur = float(c["duration_minutes"])
-        dur = float(live_dur) if live_dur is not None else snapshot_dur
-        arrival = c["_dep_dt"] + timedelta(minutes=dur)
-        if deadline_dt and arrival > deadline_dt:
-            continue  # live conditions invalidate this option
-        buffer_min = (
-            int(round((deadline_dt - arrival).total_seconds() / 60))
-            if deadline_dt
-            else None
-        )
-        severity, delta = _classify_incident(live_dur, snapshot_dur)
-        live_candidates.append(
-            {
-                "departure_time": c["departure_time"],
-                "duration_minutes": round(dur),
-                "snapshot_duration_minutes": round(snapshot_dur),
-                "arrival_time": arrival.strftime("%H:%M"),
-                "buffer_minutes": buffer_min,
-                "live": live_dur is not None,
-                "delta_minutes": delta,
-                "incident_severity": severity,
-                "_dep_dt": c["_dep_dt"],
-            }
-        )
-
     # Re-rank using live data: latest safe first (with deadline) or shortest
     # drive first (without).
     if deadline_dt:
         live_candidates.sort(key=lambda c: c["departure_time"], reverse=True)
     else:
         live_candidates.sort(key=lambda c: c["duration_minutes"])
+    # Trim to top 3 for return.
+    live_candidates = live_candidates[:TOP_N_LIVE]
 
     payload: dict = {
         "name": route["name"],
@@ -443,44 +482,37 @@ async def commute_today_next(
             "note": f"No feasible departure in the next {minutes} min.",
         }
 
-    pre_top = in_window[:TOP_N_LIVE]
-    async with httpx.AsyncClient() as client:
-        tasks = [
-            compute_route_duration(client, route["origin"], route["destination"], c["_dep_dt"])
-            for c in pre_top
-        ]
-        live_durations = await asyncio.gather(*tasks)
-
     out: list[dict] = []
-    for c, live_dur in zip(pre_top, live_durations):
-        snapshot_dur = float(c["duration_minutes"])
-        dur = float(live_dur) if live_dur is not None else snapshot_dur
-        arrival = c["_dep_dt"] + timedelta(minutes=dur)
-        if deadline_dt and arrival > deadline_dt:
-            continue
-        buffer_min = (
-            int(round((deadline_dt - arrival).total_seconds() / 60))
-            if deadline_dt
-            else None
-        )
-        severity, delta = _classify_incident(live_dur, snapshot_dur)
-        out.append(
-            {
-                "departure_time": c["departure_time"],
-                "duration_minutes": round(dur),
-                "snapshot_duration_minutes": round(snapshot_dur),
-                "arrival_time": arrival.strftime("%H:%M"),
-                "buffer_minutes": buffer_min,
-                "delta_minutes": delta,
-                "incident_severity": severity,
-                "live": live_dur is not None,
-            }
-        )
+    remaining = list(in_window)
+    async with httpx.AsyncClient() as client:
+        probe_count = 0
+        while remaining and probe_count < MAX_PROBE_BATCHES:
+            batch = remaining[:TOP_N_LIVE]
+            remaining = remaining[TOP_N_LIVE:]
+            durs = await asyncio.gather(
+                *[
+                    compute_route_duration(client, route["origin"], route["destination"], c["_dep_dt"])
+                    for c in batch
+                ]
+            )
+            for c, live_dur in zip(batch, durs):
+                built = _build_live_candidate(c, live_dur, deadline_dt)
+                if built is not None:
+                    out.append(built)
+            probe_count += 1
+            # Stop if we already have feasible options and a deadline is set.
+            # Without a deadline, first batch's shortest-drive is already the answer.
+            if out:
+                break
+
+    # Strip internal _dep_dt
+    out = [{k: v for k, v in c.items() if not k.startswith("_")} for c in out]
 
     if deadline_dt:
         out.sort(key=lambda c: c["departure_time"], reverse=True)
     else:
         out.sort(key=lambda c: c["duration_minutes"])
+    out = out[:TOP_N_LIVE]
 
     best = out[0] if out else None
     return {**base, "best": best, "candidates": out}
