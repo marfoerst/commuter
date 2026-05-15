@@ -185,6 +185,33 @@ Same shape but flat. `direction` is `morning` or `evening`. Handy when an
 upstream consumer wants only one direction per poll (e.g. it polls each
 endpoint with its own cadence).
 
+### `GET /api/commute/today/{direction}/next?minutes=60`
+
+Best departure within the next N minutes from now, with the same
+live-rechecked top-3 alternatives. Designed for dashboard tiles and
+homescreen widgets — the response's `best` object is exactly what you
+want to display ("leave at HH:MM, drive N min, arrive HH:MM").
+
+```json
+{
+  "name": "morning",
+  "day_of_week": "Tue",
+  "window_minutes": 60,
+  "window_end_time": "07:30",
+  "arrival_deadline": "09:00",
+  "best": {
+    "departure_time": "07:10",
+    "duration_minutes": 61,
+    "arrival_time": "08:11",
+    "buffer_minutes": 49,
+    "incident_severity": "clear",
+    "delta_minutes": 0,
+    "live": true
+  },
+  "candidates": [ … top 3 latest-feasible in the window … ]
+}
+```
+
 ### `GET /api/commute/heatmap`
 
 `{ "morning": [...], "evening": [...] }` where each list element is
@@ -194,28 +221,12 @@ endpoint with its own cadence).
 
 The flat list for a single direction.
 
-## Cost considerations
+## Documentation
 
-A daily recompute does `len(weekdays) × slots` Routes API calls per
-direction, with `routingPreference: TRAFFIC_AWARE_OPTIMAL`. With the defaults
-(5 days × ~13 slots × 2 directions ≈ 130 calls/day) you're well inside
-Google's free tier for personal use, but verify against current Routes API
-pricing.
-
-Every dashboard load also does 2 live Routes API calls (one for "leave now",
-one for "best remaining slot today"). For lower cost, consumers should poll
-`scan_interval >= 300` seconds.
-
-## Architecture notes
-
-- **Sampling logic** picks the next future occurrence of each weekday/time
-  slot so Google Routes API always gets a valid future `departureTime`.
-- **Two-tier freshness**: the daily 06:00 batch fills the heatmap (the
-  weekly pattern); the live dashboard endpoint queries Google again at
-  request time for "leave now" and today's best slot, so per-view numbers
-  reflect current traffic.
-- **Schema migrations** are idempotent: existing single-route deployments
-  auto-migrate to the named-route model on next start.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — file layout, components, data flow
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — runtime behavior, refresh layers, incident detection, **cost management**
+- [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) — recipes for Home Assistant, AI assistant skills, and shell scripts
+- [CHANGELOG.md](CHANGELOG.md) — feature history
 
 ## License
 
