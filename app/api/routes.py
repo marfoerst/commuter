@@ -384,6 +384,101 @@ async def commute_today_direction(
         return await _today_payload(client, route)
 
 
+@router.get("/commute/today/{direction}/next")
+async def commute_today_next(
+    direction: str,
+    minutes: int = 60,
+    _: None = Depends(require_api_key),
+):
+    """Best departure(s) within the next N minutes from now.
+
+    Filters today's snapshot candidates to those whose departure_time falls
+    between (now+30s) and (now+N min). Live-rechecks the top 3 of those via
+    Google Routes API. Honors the route's arrival_deadline.
+
+    Designed for "what should I do in the immediate window" dashboard tiles
+    (e.g. on a phone homescreen) — independent of the full-day best slot.
+    """
+    if direction not in VALID_DIRECTIONS:
+        raise HTTPException(400, f"Invalid direction. Use one of {VALID_DIRECTIONS}.")
+    if minutes < 1 or minutes > 360:
+        raise HTTPException(400, "minutes must be in [1, 360]")
+
+    route = get_route_by_name(direction)
+    if not route:
+        raise HTTPException(404, f"No active '{direction}' route configured")
+
+    now = datetime.now().astimezone()
+    today_weekday = WEEKDAYS[now.weekday()]
+    day_data = get_day_data(route["id"], today_weekday)
+    cutoff_end = now + timedelta(minutes=minutes)
+    deadline_str = route.get("arrival_deadline")
+
+    snapshot_candidates, deadline_dt = _compute_candidates(day_data, now, deadline_str)
+    in_window = [c for c in snapshot_candidates if c["_dep_dt"] <= cutoff_end]
+
+    base = {
+        "name": route["name"],
+        "day_of_week": today_weekday,
+        "origin": route["origin"],
+        "destination": route["destination"],
+        "window_minutes": minutes,
+        "window_end_time": cutoff_end.strftime("%H:%M"),
+        "arrival_deadline": deadline_str,
+        "live": True,
+    }
+
+    if not in_window:
+        return {
+            **base,
+            "best": None,
+            "candidates": [],
+            "note": f"No feasible departure in the next {minutes} min.",
+        }
+
+    pre_top = in_window[:TOP_N_LIVE]
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            compute_route_duration(client, route["origin"], route["destination"], c["_dep_dt"])
+            for c in pre_top
+        ]
+        live_durations = await asyncio.gather(*tasks)
+
+    out: list[dict] = []
+    for c, live_dur in zip(pre_top, live_durations):
+        snapshot_dur = float(c["duration_minutes"])
+        dur = float(live_dur) if live_dur is not None else snapshot_dur
+        arrival = c["_dep_dt"] + timedelta(minutes=dur)
+        if deadline_dt and arrival > deadline_dt:
+            continue
+        buffer_min = (
+            int(round((deadline_dt - arrival).total_seconds() / 60))
+            if deadline_dt
+            else None
+        )
+        severity, delta = _classify_incident(live_dur, snapshot_dur)
+        out.append(
+            {
+                "departure_time": c["departure_time"],
+                "duration_minutes": round(dur),
+                "snapshot_duration_minutes": round(snapshot_dur),
+                "arrival_time": arrival.strftime("%H:%M"),
+                "buffer_minutes": buffer_min,
+                "delta_minutes": delta,
+                "incident_severity": severity,
+                "live": live_dur is not None,
+            }
+        )
+
+    if deadline_dt:
+        out.sort(key=lambda c: c["departure_time"], reverse=True)
+    else:
+        out.sort(key=lambda c: c["duration_minutes"])
+
+    best = out[0] if out else None
+    return {**base, "best": best, "candidates": out}
+
+
 # ---------------------------------------------------------------------------
 # Heatmap endpoints
 # ---------------------------------------------------------------------------
