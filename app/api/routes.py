@@ -315,14 +315,21 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
             if deadline_dt
             else "No recommended departure remaining today."
         )
+        arrival_dt = now + timedelta(minutes=current_live)
+        buffer_min: int | None = None
+        if deadline_dt:
+            buffer_min = int(round((deadline_dt - arrival_dt).total_seconds() / 60))
         payload.update(
             {
                 "best_departure_time": now.strftime("%H:%M"),
                 "optimal_duration": round(current_live),
-                "arrival_time": (now + timedelta(minutes=current_live)).strftime("%H:%M"),
-                "buffer_minutes": None,
+                "arrival_time": arrival_dt.strftime("%H:%M"),
+                "buffer_minutes": buffer_min,
                 "time_savings": 0,
                 "alternatives": [],
+                "incident_severity": "clear",
+                "incident_delta_minutes": 0,
+                "incident_note": "Conditions normal.",
                 "note": reason,
             }
         )
