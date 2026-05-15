@@ -26,7 +26,11 @@ def start_scheduler() -> AsyncIOScheduler:
     _scheduler = AsyncIOScheduler()
     _scheduler.add_job(
         daily_job,
-        CronTrigger(hour=SCHEDULER_HOUR, minute=SCHEDULER_MINUTE),
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour=SCHEDULER_HOUR,
+            minute=SCHEDULER_MINUTE,
+        ),
         id="daily_recompute",
         replace_existing=True,
         misfire_grace_time=3600,
