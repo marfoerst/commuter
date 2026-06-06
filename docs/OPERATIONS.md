@@ -14,10 +14,18 @@ match local morning (e.g., 06:00 Europe/Berlin).
 
 What it does:
 
-- Iterates `len(weekdays) × number_of_slots` for each active route
+- Refreshes **only today's weekday column** for each active route
+  (`recompute_all_active_routes(only_today=True)`). It re-samples that one
+  day's slots and replaces just that day in SQLite, leaving the rest of the
+  week's snapshot intact.
 - Hits Google Routes API once per slot with that slot's next-occurrence
   datetime as `departureTime`
 - Stores the predicted drive time in SQLite as the "snapshot"
+
+Over a Mon–Fri week each day's column is refreshed on its own morning, so the
+heatmap stays a rolling, always-fresh 5-day window. The manual
+`POST /api/recompute` (the **Save & Recompute now** button) still samples the
+**whole week** at once — use it to seed or reset all columns.
 
 The snapshot is what the **heatmap UI** reads, and what later layers
 use as the **baseline for incident detection** (live-vs-forecast delta).
@@ -26,9 +34,10 @@ By default the cron is restricted to `mon-fri`. Sampling on weekends
 adds calls without adding signal — the route's own `weekdays` config
 typically already excludes Saturday/Sunday.
 
-Cost per batch: 5 × ~29 slots × 1 direction = ~145 calls. Both directions
-included = ~145 total (since morning has fewer slots than evening on
-average).
+Cost per daily batch: ~today's slots only. With both directions at a 15-min
+interval that's roughly **~20 calls/day** (vs. ~145/day when it re-sampled
+the entire week every morning — the old behavior that dominated monthly
+usage). A full-week seed via `/api/recompute` is ~100 calls.
 
 ### Layer 2 — Live re-rank on every `/api/commute/today/...` call
 
@@ -43,8 +52,9 @@ Whenever a client calls one of the today endpoints, the server:
 5. Fires Google Routes API calls **in parallel** for: leave-now + each
    of the 3 probe candidates (4 calls total)
 6. Re-filters with live durations against the deadline
-7. If 0 candidates remain after re-filter AND a deadline is set,
-   expands to the next earlier batch (max 3 batches → max 9 live calls)
+7. If 0 candidates remain after re-filter AND a deadline is set, expands to
+   earlier batches — gated by `MAX_PROBE_BATCHES` (default **2** → up to 7
+   live calls; set to 1 to disable expansion, 3 for up to 9)
 8. Returns top-1 as `best_departure_time`, top-3 as `alternatives`
 
 This is what makes the dashboard react to incidents inside ~5 min
@@ -92,26 +102,44 @@ exactly when you most need an answer.
 
 With this logic: the system iteratively probes earlier batches of 3
 candidates until either it finds feasible options or exhausts the
-batch budget (`MAX_PROBE_BATCHES = 3`). Worst case it does 9 live Google
-calls instead of 3. Best case (no incident) it stays at 3.
+batch budget (`MAX_PROBE_BATCHES`).
+
+**Default is `MAX_PROBE_BATCHES = 2`** — one extra batch beyond the first, so
+up to 7 live calls on a heavy-incident morning while the normal no-incident
+case still costs only 4. Set it to 1 to disable expansion entirely (max 4
+calls; `/today` may then report "no slot" instead of surfacing an earlier
+feasible departure when all 3 latest slots blow the deadline), or 3 to restore
+the original behavior (up to 9 calls).
 
 ## Cost management
 
-Routes API "Advanced" tier (which `TRAFFIC_AWARE_OPTIMAL` falls into)
-is **$0.010 per request** with **10,000 free requests/month** under the
-current pricing model. The free tier resets monthly.
+`TRAFFIC_AWARE_OPTIMAL` routing bills under the **Routes: Compute Routes Pro**
+SKU at roughly **$0.008–0.010 per request**, with a **5,000 free
+requests/month** allowance (the **Pro** tier — *not* the 10,000 that
+Essentials SKUs get; an earlier version of this doc wrongly assumed 10,000).
+The free tier resets on the 1st of each calendar month.
+
+> **Verified the hard way (June 2026):** with the old "re-sample the whole
+> week every morning" batch, steady usage ran ~5,500 calls/month — just over
+> the 5,000 Pro free tier. It crossed 5,000 around the 27th and billed the
+> remainder of the month (~€4). The "today only" batch above brings steady
+> usage to ~3,000/month, comfortably under the free tier.
 
 ### Three reference architectures
 
+All figures assume the **today-only** daily batch (~440 calls/month) and the
+**5,000/month Pro free tier**.
+
 | Architecture | Polling cadence | Daily batch | Expected calls/month |
 |---|---|---|---|
-| **A. Free-tier safe** | 15-min during your real commute window only (e.g. 06:30–09:00 + 15:30–18:30 weekdays) | Mon-Fri | ~9,000–10,000 |
-| **B. Manual only** | No HA polling; live calls only when you open the dashboard | Mon-Fri | ~5,000–6,000 |
+| **A. Free-tier safe** | 15-min during your real commute window only (e.g. 06:30–09:00 + 15:30–18:30 weekdays) | today-only, Mon-Fri | ~3,000–4,000 |
+| **B. Manual only** | No HA polling; live calls only when you open the dashboard | today-only, Mon-Fri | ~600–1,500 |
 | **C. Real-time** | 2–5 min cadence, 24/7 | every day | ~20,000–30,000 |
 
-Architecture A is the recommended default. Architecture B sacrifices
-the proactive incident push notification (you'd find out at next manual
-check). Architecture C costs roughly $100–200/month at current pricing.
+Architecture A is the recommended default and now fits inside the 5,000 free
+tier with headroom. Architecture B sacrifices the proactive incident push
+notification (you'd find out at next manual check). Architecture C blows
+through the free tier and costs roughly $100–200/month at current pricing.
 
 ### Always set a Google Cloud billing alert
 
@@ -132,6 +160,8 @@ seconds instead of 200) you'll know within hours rather than at month-end.
 - Restrict the daily batch's `weekdays` to your actual commute days.
 - Set HA's `scan_interval` to something high (e.g., `86400`) and gate
   refreshes entirely via time-window automations.
-- Lower the `MAX_PROBE_BATCHES` constant in `app/api/routes.py` from 3
-  to 1 to skip expand-on-failure (loses graceful incident handling but
-  caps live calls at 4 per `/today` request).
+- `MAX_PROBE_BATCHES` in `app/api/routes.py` defaults to **2** (up to 7 live
+  calls per `/today` request on incident mornings; 4 normally). Set it to 1 to
+  cap at 4 and skip expand-on-failure, or 3 for the original up-to-9 behavior.
+- Live `/today` and `/next` calls on a day not in the route's `weekdays`
+  (e.g. weekends) now short-circuit **without** any Google call.

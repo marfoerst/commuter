@@ -14,7 +14,7 @@ TIME_WINDOW_START = os.environ.get("TIME_WINDOW_START", "07:00").strip()
 TIME_WINDOW_END = os.environ.get("TIME_WINDOW_END", "09:00").strip()
 EVENING_TIME_WINDOW_START = os.environ.get("EVENING_TIME_WINDOW_START", "16:00").strip()
 EVENING_TIME_WINDOW_END = os.environ.get("EVENING_TIME_WINDOW_END", "18:30").strip()
-INTERVAL_MINUTES = int(os.environ.get("INTERVAL_MINUTES", "10"))
+INTERVAL_MINUTES = int(os.environ.get("INTERVAL_MINUTES", "15"))
 DEFAULT_WEEKDAYS = os.environ.get("DEFAULT_WEEKDAYS", "Mon,Tue,Wed,Thu,Fri").strip()
 
 SCHEDULER_HOUR = int(os.environ.get("SCHEDULER_HOUR", "4"))

@@ -90,7 +90,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | `TIME_WINDOW_END`           | `09:00`                | Morning sampling window end                   |
 | `EVENING_TIME_WINDOW_START` | `16:00`                | Evening sampling window start                 |
 | `EVENING_TIME_WINDOW_END`   | `18:30`                | Evening sampling window end                   |
-| `INTERVAL_MINUTES`          | `10`                   | Sampling step                                 |
+| `INTERVAL_MINUTES`          | `15`                   | Sampling step                                 |
 | `DEFAULT_WEEKDAYS`          | `Mon,Tue,Wed,Thu,Fri`  | Days to sample                                |
 | `SCHEDULER_HOUR`            | `4`                    | Daily recompute hour (in `TZ`)                |
 | `SCHEDULER_MINUTE`          | `0`                    | Daily recompute minute                        |

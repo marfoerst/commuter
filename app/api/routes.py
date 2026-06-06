@@ -24,6 +24,20 @@ router = APIRouter(prefix="/api")
 VALID_DIRECTIONS = {"morning", "evening"}
 
 
+def _route_weekdays(route: dict) -> list[str]:
+    return [w.strip() for w in (route.get("weekdays") or "").split(",") if w.strip()]
+
+
+def _is_active_day(route: dict, weekday_name: str) -> bool:
+    """True if weekday_name is one of the route's configured commute days.
+
+    Routes with no weekdays configured are treated as always-active (so we
+    never silently stop answering for a misconfigured route).
+    """
+    wd = _route_weekdays(route)
+    return (not wd) or (weekday_name in wd)
+
+
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     if API_KEY and x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -37,7 +51,7 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
 class DirectionConfig(BaseModel):
     time_window_start: str = "07:00"
     time_window_end: str = "09:00"
-    interval_minutes: int = Field(default=10, ge=1, le=120)
+    interval_minutes: int = Field(default=15, ge=1, le=120)
     weekdays: str = "Mon,Tue,Wed,Thu,Fri"
     arrival_deadline: str | None = None  # HH:MM, optional; "be at the destination by this time"
 
@@ -192,7 +206,13 @@ def _compute_candidates(
 
 
 TOP_N_LIVE = 3
-MAX_PROBE_BATCHES = 3  # incident fallback: keep probing earlier slots in batches of TOP_N_LIVE
+# Incident fallback: probe earlier slots in batches of TOP_N_LIVE. At 2 the
+# worst case is 7 live calls per /today request (leave-now + 2 batches of 3);
+# the normal no-incident case still costs only 4. This keeps graceful
+# expand-on-failure for one extra batch while capping the cost — set to 1 to
+# disable expansion entirely (max 4 calls) or 3 for the original behavior
+# (up to 9 calls on heavy-incident mornings).
+MAX_PROBE_BATCHES = 2
 INCIDENT_ALERT_DELTA_MIN = 20
 INCIDENT_WATCH_DELTA_MIN = 10
 INCIDENT_ALERT_RATIO = 1.5
@@ -265,9 +285,33 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     """
     now = datetime.now().astimezone()
     today_weekday = WEEKDAYS[now.weekday()]
+    deadline_str = route.get("arrival_deadline")
+
+    # Don't spend Google Routes API calls on days this route doesn't run
+    # (e.g. weekends). The snapshot has no data for these days anyway.
+    if not _is_active_day(route, today_weekday):
+        return {
+            "name": route["name"],
+            "day_of_week": today_weekday,
+            "origin": route["origin"],
+            "destination": route["destination"],
+            "arrival_deadline": deadline_str,
+            "best_departure_time": None,
+            "optimal_duration": None,
+            "arrival_time": None,
+            "buffer_minutes": None,
+            "current_duration": None,
+            "time_savings": 0,
+            "live": False,
+            "alternatives": [],
+            "incident_severity": "clear",
+            "incident_delta_minutes": 0,
+            "incident_note": "Conditions normal.",
+            "note": "Not a configured commute day; skipping live lookup.",
+        }
+
     day_data = get_day_data(route["id"], today_weekday)
     live_now_dt = now + timedelta(seconds=30)
-    deadline_str = route.get("arrival_deadline")
 
     snapshot_candidates, deadline_dt = _compute_candidates(day_data, now, deadline_str)
 
@@ -473,6 +517,15 @@ async def commute_today_next(
         "arrival_deadline": deadline_str,
         "live": True,
     }
+
+    if not _is_active_day(route, today_weekday):
+        return {
+            **base,
+            "live": False,
+            "best": None,
+            "candidates": [],
+            "note": "Not a configured commute day; skipping live lookup.",
+        }
 
     if not in_window:
         return {

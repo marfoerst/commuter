@@ -61,6 +61,19 @@ def clear_route_data(route_id: int) -> None:
         conn.execute("DELETE FROM commute_data WHERE route_id = ?", (route_id,))
 
 
+def clear_day_data(route_id: int, day_of_week: str) -> None:
+    """Clear a single weekday's column, leaving the rest of the week intact.
+
+    Used by the daily batch, which now refreshes only today's forecast rather
+    than re-sampling the whole week every day.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM commute_data WHERE route_id = ? AND day_of_week = ?",
+            (route_id, day_of_week),
+        )
+
+
 def insert_commute_samples(route_id: int, samples: Iterable[dict]) -> None:
     rows = [
         (

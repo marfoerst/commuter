@@ -13,8 +13,11 @@ _scheduler: AsyncIOScheduler | None = None
 
 async def daily_job() -> None:
     try:
-        counts = await recompute_all_active_routes()
-        log.info("Daily recompute complete: %s", counts)
+        # Refresh only today's forecast column; the rest of the week's snapshot
+        # stays put. Cuts the daily batch's Google Routes API calls ~5x vs.
+        # re-sampling the whole week every morning.
+        counts = await recompute_all_active_routes(only_today=True)
+        log.info("Daily recompute complete (today only): %s", counts)
     except Exception:
         log.exception("Daily recompute failed")
 

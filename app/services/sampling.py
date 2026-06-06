@@ -6,6 +6,7 @@ import httpx
 
 from app.config import CONCURRENT_REQUESTS
 from app.db.models import (
+    clear_day_data,
     clear_route_data,
     get_all_active_routes,
     insert_commute_samples,
@@ -49,8 +50,11 @@ def generate_time_slots(start: str, end: str, interval_minutes: int) -> list[tim
     return slots
 
 
-async def sample_route(route: dict) -> list[dict]:
+async def sample_route(route: dict, only_days: list[str] | None = None) -> list[dict]:
     weekdays = [w.strip() for w in route["weekdays"].split(",") if w.strip()]
+    if only_days is not None:
+        only = set(only_days)
+        weekdays = [w for w in weekdays if w in only]
     slots = generate_time_slots(
         route["time_window_start"],
         route["time_window_end"],
@@ -88,20 +92,40 @@ async def sample_route(route: dict) -> list[dict]:
     return results
 
 
-async def recompute_all_active_routes() -> dict[str, int]:
-    """Resample every active route. Returns {route_name: sample_count}."""
+async def recompute_all_active_routes(only_today: bool = False) -> dict[str, int]:
+    """Resample active routes. Returns {route_name: sample_count}.
+
+    only_today=False (manual /recompute): re-sample the full week and replace
+    every route's data — used to seed/reset the heatmap.
+
+    only_today=True (daily batch): re-sample just today's weekday column and
+    replace only that day, leaving the rest of the week intact. This avoids
+    re-forecasting the whole week every morning (the dominant source of Google
+    Routes API calls) while keeping each day's forecast fresh on its own day.
+    """
     routes = get_all_active_routes()
     if not routes:
         log.info("No active routes configured; skipping recompute")
         return {}
+
+    today_name: str | None = None
+    only_days: list[str] | None = None
+    if only_today:
+        today_name = WEEKDAYS[datetime.now().astimezone().weekday()]
+        only_days = [today_name]
+
     counts: dict[str, int] = {}
     for route in routes:
-        samples = await sample_route(route)
-        clear_route_data(route["id"])
+        samples = await sample_route(route, only_days=only_days)
+        if only_today:
+            clear_day_data(route["id"], today_name)
+        else:
+            clear_route_data(route["id"])
         insert_commute_samples(route["id"], samples)
         counts[route["name"]] = len(samples)
         log.info(
-            "Stored %d samples for route '%s' (id=%s)",
+            "Stored %d samples for route '%s' (id=%s)%s",
             len(samples), route["name"], route["id"],
+            f" [today only: {today_name}]" if only_today else "",
         )
     return counts
