@@ -23,3 +23,11 @@ SCHEDULER_MINUTE = int(os.environ.get("SCHEDULER_MINUTE", "0"))
 CONCURRENT_REQUESTS = int(os.environ.get("CONCURRENT_REQUESTS", "10"))
 
 API_KEY = os.environ.get("API_KEY", "").strip()
+
+# Proactive push (opt-in). Set either to enable a periodic in-window check that
+# notifies you when live conditions cross PUSH_MIN_SEVERITY. Costs extra Routes
+# API calls only while a commute window is open — see docs/OPERATIONS.md.
+NTFY_TOPIC_URL = os.environ.get("NTFY_TOPIC_URL", "").strip()  # e.g. https://ntfy.sh/my-commute
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip()  # generic JSON POST target
+PUSH_MIN_SEVERITY = os.environ.get("PUSH_MIN_SEVERITY", "alert").strip().lower()  # watch|alert
+PUSH_CHECK_MINUTES = int(os.environ.get("PUSH_CHECK_MINUTES", "15"))

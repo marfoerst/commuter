@@ -14,6 +14,16 @@ dashboard, a notification system, a chat assistant — can consume the data.
 - **Hard arrival deadline** (optional, per direction). When set, the system
   recommends the **latest safe departure** that still arrives in time, and
   surfaces a top-3 alternatives strip ranked by departure time.
+- **Route-option comparison** — for the recommended departure, shows the fastest
+  alternative crossings/detours (which bridge/road is quickest right now).
+- **Reliability + typical baseline** — accumulates a history of observations and
+  reports the *typical* and *p90* drive per slot, so you can pad for the bad days.
+- **Baseline reset** for disruptions — set the date a major change took effect
+  (e.g. a bridge closure) and stats ignore the pre-event traffic pattern.
+- **Window-edge hint** — nudges you to widen the sampling window when the peak
+  shifts earlier/later than your window covers.
+- **Native proactive push** (opt-in) via ntfy or a webhook — no Home Assistant
+  required.
 - Google Routes API v2 (`computeRoutes`, traffic-aware) for live travel times
 - APScheduler runs a full weekly recompute every day at a configurable hour
   (default 04:00)
@@ -96,8 +106,15 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | `SCHEDULER_MINUTE`          | `0`                    | Daily recompute minute                        |
 | `CONCURRENT_REQUESTS`       | `10`                   | Max parallel Routes API calls per recompute   |
 | `API_KEY`                   | _(empty)_              | If set, all `/api/*` calls need `X-API-Key`   |
+| `NTFY_TOPIC_URL`            | _(empty)_              | Enable push via an ntfy topic URL             |
+| `WEBHOOK_URL`               | _(empty)_              | Enable push via a generic JSON POST           |
+| `PUSH_MIN_SEVERITY`         | `alert`                | Push threshold: `watch` or `alert`            |
+| `PUSH_CHECK_MINUTES`        | `15`                   | In-window push check interval                 |
 | `TZ`                        | `UTC`                  | Container time zone                           |
 | `DATA_DIR`                  | `/app/data`            | SQLite + persistence path                     |
+
+Push is opt-in: the periodic check only runs (and only spends Routes API calls)
+when `NTFY_TOPIC_URL` or `WEBHOOK_URL` is set **and** a commute window is open.
 
 ## REST API
 
@@ -121,6 +138,7 @@ is stored automatically with the addresses reversed.
 {
   "origin": "Berliner Str. 1, 10115 Berlin",
   "destination": "Alexanderplatz, Berlin",
+  "baseline_since": "2026-05-15",
   "morning": {
     "time_window_start": "07:00",
     "time_window_end":   "09:00",
@@ -140,6 +158,10 @@ is stored automatically with the addresses reversed.
 
 `arrival_deadline` is optional. When set on a direction, that direction's
 recommendation becomes "the latest departure that still arrives by this time."
+
+`baseline_since` is optional and applies to both directions. Set it to the date
+a major traffic change took effect (e.g. a bridge closure); typical/p90 and
+incident baselines then ignore observations from before that date.
 
 ### `POST /api/recompute`
 
@@ -178,6 +200,19 @@ Live payload (Routes API queried at request time) for both directions:
 `alternatives` is the top 3 candidate slots from today's snapshot, filtered
 by deadline if set, sorted latest-departure-first when a deadline applies and
 shortest-drive-first otherwise. `best_departure_time` is `alternatives[0]`.
+
+The payload also carries, when data is available:
+
+- `route_options` — fastest alternative routes for the recommended departure:
+  `[{ "label": "A565", "duration_minutes": 38, "distance_km": 12.4 }, …]`.
+- `typical_duration`, `p90_duration`, `reliability_minutes` — the recent typical
+  and p90 drive for the chosen slot, and the median→p90 spread to pad for.
+- `window_hint` — `{ "edge": "early"|"late", "slot": "07:00", "message": … }`
+  or `null`, suggesting the sampling window be widened.
+
+Incident fields (`incident_severity`, `incident_delta_minutes`, `incident_note`)
+compare live to the slot's *typical* drive once enough history has accumulated,
+falling back to the morning forecast before then.
 
 ### `GET /api/commute/today/{direction}`
 
@@ -220,6 +255,17 @@ want to display ("leave at HH:MM, drive N min, arrive HH:MM").
 ### `GET /api/commute/heatmap/{direction}`
 
 The flat list for a single direction.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest            # offline — no API key or network needed
+```
+
+The suite covers the pure stats helpers, the observation/baseline queries, the
+route-label parsing, and an offline end-to-end run of the live re-rank payload
+(Google calls are monkeypatched).
 
 ## Documentation
 

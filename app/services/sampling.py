@@ -10,6 +10,7 @@ from app.db.models import (
     clear_route_data,
     get_all_active_routes,
     insert_commute_samples,
+    insert_observations,
 )
 from app.services.google_routes import compute_route_duration
 
@@ -122,6 +123,9 @@ async def recompute_all_active_routes(only_today: bool = False) -> dict[str, int
         else:
             clear_route_data(route["id"])
         insert_commute_samples(route["id"], samples)
+        # Append to the history table too; commute_data only keeps the latest
+        # forecast per slot, observations accumulate it over time for stats.
+        insert_observations(route["id"], samples, source="batch")
         counts[route["name"]] = len(samples)
         log.info(
             "Stored %d samples for route '%s' (id=%s)%s",

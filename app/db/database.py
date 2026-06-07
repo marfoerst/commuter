@@ -31,6 +31,25 @@ CREATE TABLE IF NOT EXISTS commute_data (
 
 CREATE INDEX IF NOT EXISTS idx_commute_route_day
 ON commute_data(route_id, day_of_week, departure_time);
+
+-- Append-only history of every duration we have observed for a slot, from both
+-- the daily batch ('batch') and the live re-rank probes ('live'). commute_data
+-- holds only the latest forecast per slot (it is replaced each day); this table
+-- accumulates over time so we can compute typical/p90 durations, detect days
+-- that are worse than typical, and honour a post-event baseline reset.
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    route_id INTEGER NOT NULL,
+    day_of_week TEXT NOT NULL,
+    departure_time TEXT NOT NULL,
+    duration_minutes REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'batch',
+    observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (route_id) REFERENCES routes(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_obs_route_slot
+ON observations(route_id, day_of_week, departure_time, observed_at);
 """
 
 _write_lock = threading.Lock()
@@ -44,6 +63,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE routes SET name = 'morning' WHERE name IS NULL OR name = ''")
     if "arrival_deadline" not in cols:
         conn.execute("ALTER TABLE routes ADD COLUMN arrival_deadline TEXT")
+    if "baseline_since" not in cols:
+        # Date (YYYY-MM-DD) of a traffic-changing event (e.g. a bridge closure).
+        # When set, typical/p90 and incident baselines ignore observations from
+        # before this date so the pre-event world stops contaminating the stats.
+        conn.execute("ALTER TABLE routes ADD COLUMN baseline_since TEXT")
 
 
 def init_db() -> None:

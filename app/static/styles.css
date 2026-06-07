@@ -88,6 +88,41 @@ h2 {
 .incident-banner.watch { background: #2c2417; color: #f5b347; border-color: #4a3a1f; }
 .incident-banner.alert { background: #2c1717; color: #ff7676; border-color: #4a1f1f; }
 .incident-banner .icon { margin-right: 6px; }
+
+.card .sub { font-size: 12px; color: #6b7280; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.reliability-note {
+  grid-column: 1 / -1; font-size: 12px; color: #f5b347; margin: 2px 0 0;
+}
+
+.route-options {
+  background: #161922; border: 1px solid #222831; border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 16px;
+}
+.route-options:empty { display: none; }
+.route-options h3 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #9aa0a6; font-weight: 600; margin: 0 0 10px;
+}
+.route-grid { display: grid; gap: 6px; }
+.route-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: baseline;
+  padding: 6px 0; border-top: 1px solid #1f232b; font-variant-numeric: tabular-nums;
+}
+.route-row:first-child { border-top: 0; }
+.route-row.top { color: #5fd07a; font-weight: 600; }
+.route-label { font-size: 13px; }
+.route-dur { font-size: 13px; white-space: nowrap; }
+.route-tag {
+  font-size: 11px; color: #9aa0a6; border: 1px solid #2a2d33; border-radius: 999px;
+  padding: 1px 7px; margin-left: 6px;
+}
+.route-tag.fastest { color: #5fd07a; border-color: #2f5a3a; }
+
+.window-hint {
+  margin-bottom: 16px; padding: 10px 14px; border-radius: 8px; font-size: 13px;
+  background: #16202c; color: #7fb0e6; border: 1px solid #1f3a52;
+}
+.window-hint .icon { margin-right: 6px; }
 .heatmap-wrap { overflow-x: auto; }
 .heatmap { display: grid; gap: 2px; min-width: max-content; }
 .heatmap-row { display: grid; gap: 2px; }
@@ -109,7 +144,7 @@ fieldset.addresses label { gap: 6px; }
 fieldset.addresses { display: flex; flex-direction: column; gap: 10px; }
 label { display: flex; flex-direction: column; font-size: 13px; color: #c0c4cc; gap: 6px; }
 label.inline { flex-direction: row; gap: 6px; align-items: center; margin-right: 12px; display: inline-flex; }
-input[type="text"], input[type="time"], input[type="number"], input:not([type]) {
+input[type="text"], input[type="time"], input[type="number"], input[type="date"], input:not([type]) {
   background: #161922; color: #e6e8eb; border: 1px solid #2a2d33;
   border-radius: 6px; padding: 9px 11px; font-size: 14px; outline: none;
 }

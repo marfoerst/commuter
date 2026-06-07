@@ -28,6 +28,7 @@ async function loadConfig() {
   const evening = cfg.evening || {};
   form.origin.value = morning.origin || "";
   form.destination.value = morning.destination || "";
+  form.baseline_since.value = morning.baseline_since || "";
   form.m_start.value = morning.time_window_start || "07:00";
   form.m_end.value = morning.time_window_end || "09:00";
   form.m_interval.value = morning.interval_minutes || 10;
@@ -54,6 +55,7 @@ function readForm() {
   return {
     origin: fd.get("origin"),
     destination: fd.get("destination"),
+    baseline_since: fd.get("baseline_since") || null,
     morning: {
       time_window_start: fd.get("m_start"),
       time_window_end: fd.get("m_end"),
@@ -171,6 +173,12 @@ function renderSummary(direction, d) {
         <div class="value delta ${deltaCls}">${deltaText}</div>
       </div>`;
   }
+  let driveSub = "";
+  if (d.typical_duration != null) {
+    let s = `typical ${d.typical_duration} min`;
+    if (d.p90_duration != null) s += ` · p90 ${d.p90_duration} min`;
+    driveSub = `<div class="sub">${s}</div>`;
+  }
   target.innerHTML = `
     <div class="card">
       <div class="label">${bestLabel}</div>
@@ -179,6 +187,7 @@ function renderSummary(direction, d) {
     <div class="card">
       <div class="label">Drive time</div>
       <div class="value">${d.optimal_duration} min</div>
+      ${driveSub}
     </div>
     <div class="card">
       <div class="label">${hasDeadline ? "Predicted arrival" : "If you leave now"}</div>
@@ -186,8 +195,53 @@ function renderSummary(direction, d) {
     </div>
     ${fourthCard}
   `;
+  if (d.reliability_minutes != null && d.reliability_minutes >= 3) {
+    const rel = document.createElement("p");
+    rel.className = "reliability-note";
+    rel.textContent = `Unreliable slot: pad ${d.reliability_minutes} min to cover the bad days (p90).`;
+    target.appendChild(rel);
+  }
   const note = d.note ? ` · ${d.note}` : "";
   metaTarget.textContent = `${d.origin}  →  ${d.destination}${note}`;
+}
+
+function renderRouteOptions(direction, d) {
+  const target = document.querySelector(`.route-options[data-direction="${direction}"]`);
+  if (!target) return;
+  const opts = d?.route_options;
+  if (!opts || opts.length < 2) {
+    target.innerHTML = "";
+    return;
+  }
+  const fastest = opts[0].duration_minutes;
+  const rows = opts
+    .map((o, i) => {
+      const delta = o.duration_minutes - fastest;
+      const tag =
+        i === 0
+          ? `<span class="route-tag fastest">fastest</span>`
+          : `<span class="route-tag">+${delta} min</span>`;
+      const dist = o.distance_km != null ? ` · ${o.distance_km} km` : "";
+      return `
+        <div class="route-row ${i === 0 ? "top" : ""}">
+          <div class="route-label">${o.label}</div>
+          <div class="route-dur">${o.duration_minutes} min${dist} ${tag}</div>
+        </div>`;
+    })
+    .join("");
+  target.innerHTML = `<h3>Route options now (leave at ${d.best_departure_time})</h3><div class="route-grid">${rows}</div>`;
+}
+
+function renderWindowHint(direction, d) {
+  const el = document.querySelector(`.window-hint[data-direction="${direction}"]`);
+  if (!el) return;
+  const hint = d?.window_hint;
+  if (!hint || !hint.message) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+  el.innerHTML = `<span class="icon">↔</span>${hint.message}`;
 }
 
 function renderAlternatives(direction, d) {
@@ -286,7 +340,9 @@ async function loadToday() {
   DIRECTIONS.forEach((dir) => {
     renderIncidentBanner(dir, data[dir]);
     renderSummary(dir, data[dir]);
+    renderRouteOptions(dir, data[dir]);
     renderAlternatives(dir, data[dir]);
+    renderWindowHint(dir, data[dir]);
   });
 }
 
