@@ -142,6 +142,21 @@ function renderSummary(direction, d) {
     metaTarget.textContent = d?.error || "";
     return;
   }
+  // No actionable recommendation (e.g. weekend / not a commute day, or no
+  // feasible slot left today). Show a friendly state instead of "null" cards.
+  if (d.best_departure_time == null) {
+    let msg = d.note || "No recommendation available right now.";
+    if (/not a configured commute day/i.test(msg)) {
+      msg = `No commute scheduled today (${d.day_of_week}). Recommendations resume on your next commute day.`;
+    }
+    target.innerHTML = `
+      <div class="card wide">
+        <div class="label">Nothing to recommend right now</div>
+        <div class="value note">${msg}</div>
+      </div>`;
+    metaTarget.textContent = `${d.origin}  →  ${d.destination}`;
+    return;
+  }
   const hasDeadline = d.arrival_deadline != null && d.arrival_deadline !== "";
   const bestLabel = hasDeadline
     ? `Latest safe departure (${d.day_of_week})`

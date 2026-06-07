@@ -53,6 +53,8 @@ h2 {
 .card .value { font-size: 26px; font-weight: 600; margin-top: 6px; }
 .card .delta.save { color: #5fd07a; }
 .card .delta.loss { color: #ff7676; }
+.card.wide { grid-column: 1 / -1; }
+.card .value.note { font-size: 15px; font-weight: 500; color: #c0c4cc; line-height: 1.4; }
 
 .alternatives {
   background: #161922; border: 1px solid #222831; border-radius: 12px;
