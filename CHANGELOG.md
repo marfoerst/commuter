@@ -4,6 +4,41 @@ All notable changes to the Commute Optimizer.
 
 ## [Unreleased]
 
+### Added — traffic-disruption resilience
+
+Motivated by a multi-year Bonn bridge closure: when a corridor's normal
+degrades and gets less predictable, "what time" matters less than "which
+route, how bad vs typical, and tell me without me looking".
+
+- **Route-option comparison** — the live payload now includes `route_options`,
+  the fastest alternative crossings/detours for the recommended departure
+  (Google `computeAlternativeRoutes`, returned in a single billable call).
+  Answers "which bridge is fastest right now", not just "what minute".
+- **Observation history** — a new append-only `observations` table records every
+  batch forecast **and** every live probe. `commute_data` still holds only the
+  latest forecast per slot; history accumulates separately and powers the three
+  features below.
+- **Reliability (typical / p90)** — per-slot trailing median and p90 over recent
+  observations. The dashboard shows "typical 38 · p90 58" and recommends padding
+  for the bad days. Surfaced as `typical_duration`, `p90_duration`,
+  `reliability_minutes`.
+- **Incident detection re-anchored to *typical*** — incidents are now judged
+  against the trailing median for the slot (when enough history exists), not
+  this morning's forecast. On a chronically congested corridor the forecast
+  already bakes in the jam; "vs typical" still flags the genuinely bad days.
+  Falls back to the old snapshot comparison when history is thin.
+- **Baseline reset** — `baseline_since` (date) on a route. Set it to the day a
+  disruption began; typical/p90 and incident baselines ignore everything before
+  it, so the pre-event traffic pattern stops skewing today's advice. Configurable
+  from the Setup tab.
+- **Window-edge hint** — when the fastest slot sits at the very start or end of
+  the sampling window, `window_hint` suggests widening it (a closure shifts the
+  peak earlier/later). Shown as a dismissible nudge on the dashboard.
+- **Native proactive push** — opt-in `NTFY_TOPIC_URL` and/or `WEBHOOK_URL`. A
+  periodic in-window check pushes when live conditions cross
+  `PUSH_MIN_SEVERITY` (deduped per day, escalation-aware). No Home Assistant
+  required. Spends Routes API calls only while a commute window is open.
+
 ### Added
 - **Named routes** — `morning` (home → office) and `evening` (office → home),
   each with its own sampling window. Evening addresses auto-reverse from
@@ -78,8 +113,16 @@ routes:
 
 commute_data:
   id, route_id, day_of_week, departure_time, duration_minutes, created_at
+
+observations:                                    # NEW — append-only history
+  id, route_id, day_of_week, departure_time,
+  duration_minutes, source ('batch'|'live'), observed_at
 ```
 
-Migrations: `name` and `arrival_deadline` columns added idempotently. Old
-single-route deployments migrate automatically (existing row gets
-`name = 'morning'`, `arrival_deadline` stays NULL).
+Migrations: `name`, `arrival_deadline`, and `baseline_since` columns added
+idempotently; the `observations` table is created if absent. Old single-route
+deployments migrate automatically (existing row gets `name = 'morning'`,
+`arrival_deadline` / `baseline_since` stay NULL). History simply starts
+accumulating from the first batch/live call after upgrade — until it builds up,
+reliability and typical-baseline features degrade gracefully to the previous
+snapshot-only behaviour.

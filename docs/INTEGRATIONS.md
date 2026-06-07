@@ -186,6 +186,16 @@ math.
 Find your `notify.*` service in HA → Developer Tools → Services → type
 `notify.` and pick the entry matching your phone.
 
+> **No Home Assistant?** The app can push on its own. Set `NTFY_TOPIC_URL`
+> (an [ntfy](https://ntfy.sh) topic) and/or `WEBHOOK_URL`, plus
+> `PUSH_MIN_SEVERITY` (`watch`/`alert`). A scheduler job checks live conditions
+> every `PUSH_CHECK_MINUTES` **while a commute window is open** and pushes when
+> the threshold is crossed (deduped per day, escalation-aware). The webhook
+> receives `{title, message, severity, route, best_departure_time, delta_minutes}`.
+> This spends extra Routes API calls — see the **Proactive push** section in
+> [OPERATIONS.md](OPERATIONS.md) before enabling. If you already poll from HA,
+> prefer the automation above rather than running both.
+
 ### Step 4 — Lovelace dashboard tile (Mushroom)
 
 Requires the **Mushroom** custom card from HACS. Add as a Manual card:

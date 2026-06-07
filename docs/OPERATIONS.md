@@ -55,10 +55,18 @@ Whenever a client calls one of the today endpoints, the server:
 7. If 0 candidates remain after re-filter AND a deadline is set, expands to
    earlier batches — gated by `MAX_PROBE_BATCHES` (default **2** → up to 7
    live calls; set to 1 to disable expansion, 3 for up to 9)
-8. Returns top-1 as `best_departure_time`, top-3 as `alternatives`
+8. Fires **one** `computeAlternativeRoutes` call for the chosen departure to
+   populate `route_options` (the competing crossings/detours) — +1 call
+9. Records every successful live probe into the `observations` history table
+10. Returns top-1 as `best_departure_time`, top-3 as `alternatives`
+
+So a normal `/today` request now costs **5** Routes API calls (leave-now + 3
+probes + 1 alternatives), up from 4 before route options were added; the
+worst-case incident morning is **8** (7 + alternatives).
 
 This is what makes the dashboard react to incidents inside ~5 min
-without requiring a separate incident API.
+without requiring a separate incident API. The recorded observations also
+accumulate into the typical/p90 baselines described below.
 
 ### Layer 3 — Consumer polling cadence
 
@@ -71,9 +79,16 @@ plus whenever the Companion app is opened.
 
 ## Incident detection
 
-For each top-3 candidate the live re-rank produces, the server has both
-the snapshot duration (from 06:00) and the live duration (from Google
-right now). `delta = live − snapshot`.
+For each top-3 candidate the live re-rank produces, the server compares the
+live duration against a **baseline** and computes `delta = live − baseline`.
+
+The baseline is the slot's **typical** drive — the trailing median over recent
+observations (filtered by `baseline_since`) — once at least
+`MIN_SAMPLES_FOR_STATS` observations exist for that slot. Before then it falls
+back to this morning's snapshot forecast. This matters on a chronically
+congested corridor: the snapshot already bakes in the standing jam, so
+"live vs snapshot" stops firing; "live vs typical-for-this-slot" still flags the
+genuinely worse-than-usual days.
 
 | Condition | Severity |
 |---|---|
@@ -89,8 +104,39 @@ blip on one slot."
 
 Note: this is not a labeled incident feed from Google. It does not
 tell you what or where the incident is — only that your route is taking
-materially longer than the morning forecast expected. For specifics,
-fall back to Google Maps.
+materially longer than typical. For specifics, fall back to Google Maps.
+
+### Observation history, typical/p90, and baseline reset
+
+`commute_data` holds only the latest forecast per slot (it's replaced each day).
+The `observations` table is append-only: every daily-batch forecast and every
+live probe lands there with a timestamp. From it the server computes, per slot:
+
+- **typical** (`typical_duration`) — trailing median
+- **p90** (`p90_duration`) — the bad-day duration; `reliability_minutes` is the
+  median→p90 spread you should pad for
+- the **incident baseline** above
+
+By default stats use a rolling `RECENT_DAYS` (35) window. Setting a route's
+`baseline_since` to the date a disruption began clamps the lower bound to that
+date instead, so the pre-event traffic pattern is excluded entirely. History
+accumulates from first run after upgrade; until it's thick enough every feature
+degrades to the previous snapshot-only behaviour.
+
+## Proactive push
+
+Opt-in. Set `NTFY_TOPIC_URL` and/or `WEBHOOK_URL`. A scheduler job runs every
+`PUSH_CHECK_MINUTES` (default 15) and, **only when a commute window is open on a
+configured day**, runs the live `/today` computation per route and pushes when
+`incident_severity` crosses `PUSH_MIN_SEVERITY` (default `alert`). Pushes are
+deduped per day and only re-fire on escalation (`watch` → `alert`).
+
+Cost: each in-window check costs a full `/today` (~5 calls) per active route.
+A 2.5h morning + 3h evening window at 15-min cadence is roughly
+`(10 + 12) checks × 5 calls × ~21 weekdays ≈ 2,300 calls/month` **in addition**
+to dashboard polling — so enable it deliberately and watch your budget alert.
+If you already poll from Home Assistant, you likely don't need this too; it's
+for setups with no always-on consumer.
 
 ## Expand-on-failure (incident edge case)
 

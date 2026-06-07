@@ -23,13 +23,15 @@ commuter/
     ├── api/
     │   └── routes.py       ← all REST endpoints, including live re-rank logic
     ├── services/
-    │   ├── google_routes.py    ← Google Routes API v2 client
-    │   └── sampling.py         ← batch sampler (parallel, semaphore-bounded)
+    │   ├── google_routes.py    ← Google Routes API v2 client (+ alternatives)
+    │   ├── sampling.py         ← batch sampler (parallel, semaphore-bounded)
+    │   ├── stats.py            ← pure stats: typical/p90, incident, window edge
+    │   └── notify.py           ← opt-in push (ntfy / webhook)
     ├── scheduler/
-    │   └── jobs.py         ← APScheduler daily cron job (Mon-Fri only)
+    │   └── jobs.py         ← APScheduler: daily recompute + in-window push check
     ├── db/
     │   ├── database.py     ← SQLite schema + lightweight migrations
-    │   └── models.py       ← DAO helpers
+    │   └── models.py       ← DAO helpers (+ observation history / stats queries)
     └── static/
         ├── index.html      ← dashboard UI
         ├── styles.css
@@ -45,8 +47,26 @@ sends a single origin/destination/departureTime triple and returns
 predicted duration in minutes. Uses `TRAFFIC_AWARE_OPTIMAL` routing
 preference — the highest-quality, traffic-aware tier.
 
-Failure mode: returns `None` on HTTP error or empty response. Callers
-handle the None case (fallback to snapshot duration, or surface error).
+`compute_route_alternatives()` asks for multiple competing routes in one call
+(`computeAlternativeRoutes`) and returns them fastest-first with a road label.
+Alternatives aren't supported with `TRAFFIC_AWARE_OPTIMAL`, so this one uses
+`TRAFFIC_AWARE` (one tier down, still real-time traffic).
+
+Failure mode: returns `None` (single) / `[]` (alternatives) on HTTP error or
+empty response. Callers handle it (fallback to snapshot duration, or omit the
+best-effort enrichment).
+
+### `app.services.stats`
+
+Dependency-free (stdlib only) so it's unit-testable without a DB or network.
+`summarize()` (typical/p90/spread), `classify_incident()` (live vs a baseline →
+`clear`/`watch`/`alert`), and `window_edge_hint()` (best slot at the window
+edge). All degrade to None/"clear" when history is thin.
+
+### `app.services.notify`
+
+Best-effort push delivery to an ntfy topic and/or a JSON webhook. Failures are
+logged, never raised, so a flaky notifier can't break the dashboard or scheduler.
 
 ### `app.services.sampling`
 
@@ -70,19 +90,22 @@ All REST endpoints. The "smart" logic lives here:
 
 - `_compute_candidates()` — turns raw snapshot rows into ranked candidate
   dicts (filtered to future + deadline-feasible, sorted appropriately)
-- `_classify_incident()` — live-vs-snapshot delta → `clear`/`watch`/`alert`
 - `_build_live_candidate()` — combines a snapshot candidate + live duration
-  into the output shape, returning None if live conditions make it
-  deadline-infeasible
-- `_today_payload()` — the live re-rank for `/today/{direction}`,
-  including expand-on-failure
+  (+ the slot's trailing stats) into the output shape, classifying the incident
+  via `stats.classify_incident()` and attaching typical/p90; returns None if
+  live conditions make it deadline-infeasible
+- `_today_payload()` — the live re-rank for `/today/{direction}`, including
+  expand-on-failure, route-option enrichment, live-observation recording, and
+  the window-edge hint
 - `commute_today_next()` — same algorithm but pre-filtered to a rolling
   N-minute window
 
 ### `app.db`
 
-SQLite with WAL mode. Two tables: `routes` and `commute_data`. Migrations
-applied idempotently on startup via `PRAGMA table_info()` introspection.
+SQLite with WAL mode. Three tables: `routes`, `commute_data` (latest forecast
+per slot, replaced daily), and `observations` (append-only history feeding the
+typical/p90 and incident baselines). Migrations applied idempotently on startup
+via `PRAGMA table_info()` introspection.
 
 ### `app.main`
 
@@ -90,7 +113,8 @@ FastAPI app with a lifespan handler that on startup:
 1. Runs `init_db()` (creates tables + applies migrations)
 2. Seeds default morning and evening routes from env if no active routes
    exist (auto-reverses evening addresses)
-3. Starts the APScheduler
+3. Starts the APScheduler (daily recompute, plus the push check when push is
+   configured)
 
 And on shutdown stops the scheduler gracefully.
 
@@ -108,14 +132,18 @@ FastAPI route handler  ──► get_route_by_name("morning")
         ▼
 _today_payload(client, route)
         │
-        ├── get_day_data(route.id, today_weekday)  ──► SQLite SELECT
+        ├── get_day_data(route.id, today_weekday)        ──► SQLite SELECT
+        ├── get_day_slot_stats(route.id, weekday, baseline_since) ──► observations
         ├── _compute_candidates(day_data, now, deadline)
         │       └── filter future + deadline-feasible, sort latest-first
-        ├── parallel: 4 × compute_route_duration() ──► Google Routes API
-        ├── build live_candidates with _build_live_candidate()
+        ├── parallel: 4 × compute_route_duration()       ──► Google Routes API
+        ├── build live_candidates with _build_live_candidate() (incident vs typical)
         ├── if empty + deadline set: probe next batch (expand-on-failure)
+        ├── insert_observations(live probes, source='live') ──► SQLite INSERT
+        ├── compute_route_alternatives(best slot)        ──► Google Routes API (+1)
         ├── re-rank by departure_time desc (deadline) or duration asc
-        └── return payload with best, alternatives, incident_*
+        └── return payload with best, alternatives, route_options,
+                window_hint, typical/p90, incident_*
         │
         ▼
 JSON response back to browser
@@ -140,7 +168,8 @@ for each active route:
         │
         ├── asyncio.gather all tasks (semaphore-bounded, default 10 concurrent)
         │
-        └── insert results into commute_data (replacing old rows for this route)
+        ├── insert results into commute_data (replacing old rows for this route)
+        └── append the same results to observations (source='batch')
 ```
 
 ## Routing-preference choice

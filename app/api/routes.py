@@ -10,12 +10,22 @@ from app.config import API_KEY
 from app.db.models import (
     get_all_active_routes,
     get_day_data,
+    get_day_slot_stats,
     get_heatmap,
     get_route_by_name,
+    insert_observations,
     upsert_named_route,
 )
-from app.services.google_routes import compute_route_duration
+from app.services.google_routes import (
+    compute_route_alternatives,
+    compute_route_duration,
+)
 from app.services.sampling import WEEKDAYS, recompute_all_active_routes
+from app.services.stats import (
+    MIN_SAMPLES_FOR_STATS,
+    classify_incident,
+    window_edge_hint,
+)
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +74,9 @@ class FullConfig(BaseModel):
 
     origin: str = Field(min_length=1)
     destination: str = Field(min_length=1)
+    # Date (YYYY-MM-DD) of a traffic-changing event (e.g. a bridge closure).
+    # Stats and incident baselines ignore observations from before this date.
+    baseline_since: str | None = None
     morning: DirectionConfig = Field(default_factory=DirectionConfig)
     evening: DirectionConfig = Field(
         default_factory=lambda: DirectionConfig(
@@ -97,6 +110,7 @@ async def set_config(cfg: FullConfig, _: None = Depends(require_api_key)):
         cfg.morning.interval_minutes,
         cfg.morning.weekdays,
         cfg.morning.arrival_deadline,
+        cfg.baseline_since,
     )
     evening_id = upsert_named_route(
         "evening",
@@ -107,6 +121,7 @@ async def set_config(cfg: FullConfig, _: None = Depends(require_api_key)):
         cfg.evening.interval_minutes,
         cfg.evening.weekdays,
         cfg.evening.arrival_deadline,
+        cfg.baseline_since,
     )
     return {
         "status": "ok",
@@ -213,15 +228,20 @@ TOP_N_LIVE = 3
 # disable expansion entirely (max 4 calls) or 3 for the original behavior
 # (up to 9 calls on heavy-incident mornings).
 MAX_PROBE_BATCHES = 2
-INCIDENT_ALERT_DELTA_MIN = 20
-INCIDENT_WATCH_DELTA_MIN = 10
-INCIDENT_ALERT_RATIO = 1.5
 
 
 def _build_live_candidate(
-    c: dict, live_dur: float | None, deadline_dt: datetime | None
+    c: dict,
+    live_dur: float | None,
+    deadline_dt: datetime | None,
+    slot_stats: dict | None = None,
 ) -> dict | None:
     """Convert a snapshot candidate + live duration into the return shape.
+
+    ``slot_stats`` is the trailing summary for this slot (from accumulated
+    observations) or None. When it has enough samples, incidents are judged
+    against the *typical* drive for this slot rather than this morning's
+    snapshot, and reliability fields (typical/p90) are attached.
 
     Returns None if the live arrival violates the deadline (filtered out).
     """
@@ -235,41 +255,41 @@ def _build_live_candidate(
         if deadline_dt
         else None
     )
-    severity, delta = _classify_incident(live_dur, snapshot_dur)
+
+    typical = p90 = reliability = None
+    baseline = snapshot_dur
+    baseline_kind = "forecast"
+    if slot_stats and slot_stats.get("count", 0) >= MIN_SAMPLES_FOR_STATS:
+        typical = slot_stats["typical_minutes"]
+        p90 = slot_stats["p90_minutes"]
+        reliability = slot_stats["reliability_minutes"]
+        baseline = typical
+        baseline_kind = "typical"
+
+    severity, delta = classify_incident(live_dur, baseline)
     return {
         "departure_time": c["departure_time"],
         "duration_minutes": round(dur),
         "snapshot_duration_minutes": round(snapshot_dur),
+        "typical_minutes": round(typical) if typical is not None else None,
+        "p90_minutes": round(p90) if p90 is not None else None,
+        "reliability_minutes": round(reliability) if reliability is not None else None,
         "arrival_time": arrival.strftime("%H:%M"),
         "buffer_minutes": buffer_min,
         "live": live_dur is not None,
         "delta_minutes": delta,
         "incident_severity": severity,
+        "_baseline_kind": baseline_kind,
         "_dep_dt": c["_dep_dt"],
     }
 
 
-def _classify_incident(live_dur: float | None, snapshot_dur: float) -> tuple[str, int]:
-    """Compare live to snapshot. Returns (severity, delta_minutes).
-
-    severity in {"clear", "watch", "alert"}; delta is round(live - snapshot).
-    """
-    if live_dur is None:
-        return "clear", 0
-    delta = int(round(float(live_dur) - float(snapshot_dur)))
-    ratio = float(live_dur) / float(snapshot_dur) if snapshot_dur > 0 else 1.0
-    if delta >= INCIDENT_ALERT_DELTA_MIN or ratio >= INCIDENT_ALERT_RATIO:
-        return "alert", delta
-    if delta >= INCIDENT_WATCH_DELTA_MIN:
-        return "watch", delta
-    return "clear", delta
-
-
-def _incident_note(severity: str, delta: int) -> str:
+def _incident_note(severity: str, delta: int, baseline_kind: str = "typical") -> str:
+    ref = "typical for this time" if baseline_kind == "typical" else "morning forecast"
     if severity == "alert":
-        return f"Live drive is +{delta} min vs morning forecast. Likely incident on route."
+        return f"Live drive is +{delta} min vs {ref}. Likely incident on route."
     if severity == "watch":
-        return f"Heavier traffic than forecast (+{delta} min)."
+        return f"Heavier traffic than {ref} (+{delta} min)."
     return "Conditions normal."
 
 
@@ -311,6 +331,9 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
         }
 
     day_data = get_day_data(route["id"], today_weekday)
+    slot_stats = get_day_slot_stats(
+        route["id"], today_weekday, route.get("baseline_since")
+    )
     live_now_dt = now + timedelta(seconds=30)
 
     snapshot_candidates, deadline_dt = _compute_candidates(day_data, now, deadline_str)
@@ -333,7 +356,9 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     probed: list[dict] = []
     for c, live_dur in zip(first_batch, results[1:]):
         probed.append({"_c": c, "_live": live_dur})
-        built = _build_live_candidate(c, live_dur, deadline_dt)
+        built = _build_live_candidate(
+            c, live_dur, deadline_dt, slot_stats.get(c["departure_time"])
+        )
         if built is not None:
             live_candidates.append(built)
 
@@ -357,10 +382,27 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
         )
         for c, live_dur in zip(next_batch, durs):
             probed.append({"_c": c, "_live": live_dur})
-            built = _build_live_candidate(c, live_dur, deadline_dt)
+            built = _build_live_candidate(
+                c, live_dur, deadline_dt, slot_stats.get(c["departure_time"])
+            )
             if built is not None:
                 live_candidates.append(built)
         probe_count += 1
+
+    # Persist every successful live probe to history. Over time this turns the
+    # live re-rank into a rich, real-world record of how each slot actually
+    # behaves, which feeds typical/p90 and incident baselines.
+    live_obs = [
+        {
+            "day_of_week": today_weekday,
+            "departure_time": p["_c"]["departure_time"],
+            "duration_minutes": p["_live"],
+        }
+        for p in probed
+        if p["_live"] is not None
+    ]
+    if live_obs:
+        insert_observations(route["id"], live_obs, source="live")
 
     if current_live is None and day_data:
         fallback = _pick_current_slot(day_data, now.replace(tzinfo=None))
@@ -410,6 +452,8 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
                 "buffer_minutes": buffer_min,
                 "time_savings": 0,
                 "alternatives": [],
+                "route_options": [],
+                "window_hint": window_edge_hint(day_data, deadline_dt is not None),
                 "incident_severity": "clear",
                 "incident_delta_minutes": 0,
                 "incident_note": "Conditions normal.",
@@ -427,17 +471,30 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     worst_sev = worst["incident_severity"]
     worst_delta = worst["delta_minutes"]
 
+    # Which crossing/detour is fastest for the recommended departure. One extra
+    # billable call that returns all alternatives at once; best-effort only.
+    route_options = await compute_route_alternatives(
+        client, route["origin"], route["destination"], best["_dep_dt"]
+    )
+
     payload.update(
         {
             "best_departure_time": best["departure_time"],
             "optimal_duration": best["duration_minutes"],
             "arrival_time": best["arrival_time"],
             "buffer_minutes": best["buffer_minutes"],
+            "typical_duration": best["typical_minutes"],
+            "p90_duration": best["p90_minutes"],
+            "reliability_minutes": best["reliability_minutes"],
             "time_savings": round(current_live - best["duration_minutes"]),
             "alternatives": alt_out,
+            "route_options": route_options,
+            "window_hint": window_edge_hint(day_data, deadline_dt is not None),
             "incident_severity": worst_sev,
             "incident_delta_minutes": worst_delta,
-            "incident_note": _incident_note(worst_sev, worst_delta),
+            "incident_note": _incident_note(
+                worst_sev, worst_delta, worst.get("_baseline_kind", "typical")
+            ),
         }
     )
     return payload
@@ -501,6 +558,9 @@ async def commute_today_next(
     now = datetime.now().astimezone()
     today_weekday = WEEKDAYS[now.weekday()]
     day_data = get_day_data(route["id"], today_weekday)
+    slot_stats = get_day_slot_stats(
+        route["id"], today_weekday, route.get("baseline_since")
+    )
     cutoff_end = now + timedelta(minutes=minutes)
     deadline_str = route.get("arrival_deadline")
 
@@ -549,7 +609,9 @@ async def commute_today_next(
                 ]
             )
             for c, live_dur in zip(batch, durs):
-                built = _build_live_candidate(c, live_dur, deadline_dt)
+                built = _build_live_candidate(
+                    c, live_dur, deadline_dt, slot_stats.get(c["departure_time"])
+                )
                 if built is not None:
                     out.append(built)
             probe_count += 1

@@ -25,7 +25,9 @@
       </div>
       <div class="incident-banner" data-direction="morning" style="display:none"></div>
       <div class="summary" data-direction="morning"></div>
+      <div class="route-options" data-direction="morning"></div>
       <div class="alternatives" data-direction="morning"></div>
+      <div class="window-hint" data-direction="morning" style="display:none"></div>
       <div class="heatmap-wrap"><div class="heatmap" data-direction="morning"></div></div>
     </div>
 
@@ -36,7 +38,9 @@
       </div>
       <div class="incident-banner" data-direction="evening" style="display:none"></div>
       <div class="summary" data-direction="evening"></div>
+      <div class="route-options" data-direction="evening"></div>
       <div class="alternatives" data-direction="evening"></div>
+      <div class="window-hint" data-direction="evening" style="display:none"></div>
       <div class="heatmap-wrap"><div class="heatmap" data-direction="evening"></div></div>
     </div>
 
@@ -54,6 +58,10 @@
           <input name="destination" required placeholder="e.g. Alexanderplatz, Berlin">
         </label>
         <p class="hint">The evening route automatically uses the reverse: Office → Home.</p>
+        <label>Traffic baseline reset (optional)
+          <input name="baseline_since" type="date">
+        </label>
+        <p class="hint">Set this to the date a major change took effect (e.g. a bridge closure). Typical-time and incident comparisons ignore data from before it, so the old traffic pattern stops skewing today's advice.</p>
       </fieldset>
 
       <fieldset>
