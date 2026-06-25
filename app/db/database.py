@@ -5,8 +5,41 @@ from contextlib import contextmanager
 from app.config import DATABASE_PATH
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    api_token TEXT UNIQUE,
+    ntfy_topic_url TEXT,
+    webhook_url TEXT,
+    push_min_severity TEXT NOT NULL DEFAULT 'alert',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- Per-user, per-day count of Google Routes API calls spent. Enforces the shared
+-- key's per-user budget so one user can't drain the free tier for everyone.
+CREATE TABLE IF NOT EXISTS api_usage (
+    user_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
     name TEXT NOT NULL DEFAULT 'morning',
     origin TEXT NOT NULL,
     destination TEXT NOT NULL,
@@ -16,8 +49,14 @@ CREATE TABLE IF NOT EXISTS routes (
     weekdays TEXT NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri',
     arrival_deadline TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- One active route per (user, name). Partial index so legacy rows with a NULL
+-- user_id (pre-migration) don't collide before they're backfilled at startup.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_user_name_active
+ON routes(user_id, name) WHERE is_active = 1 AND user_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS commute_data (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +112,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # computed by matching the route geometry to the live traffic feed at
         # config/recompute time. Drives the live local-traffic panel + alerts.
         conn.execute("ALTER TABLE routes ADD COLUMN bonn_segment_ids TEXT")
+    if "user_id" not in cols:
+        # Multi-user: scope each route to an owning user. Existing single-tenant
+        # rows get NULL here and are backfilled to the seeded admin at startup
+        # (see app.main.seed_admin_user), after which the unique index applies.
+        conn.execute("ALTER TABLE routes ADD COLUMN user_id INTEGER")
 
 
 def init_db() -> None:

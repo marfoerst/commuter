@@ -150,9 +150,27 @@ date instead, so the pre-event traffic pattern is excluded entirely. History
 accumulates from first run after upgrade; until it's thick enough every feature
 degrades to the previous snapshot-only behaviour.
 
+## Multi-user
+
+The app is multi-user (invite-only). An admin is seeded on first start from
+`ADMIN_USERNAME`/`ADMIN_PASSWORD`; on upgrade from the single-user schema the
+existing routes/history are migrated onto that admin (routes with a NULL
+`user_id` are adopted at startup). Each user is fully isolated — routes,
+history, Bonn matching, and notifications are all scoped by `user_id`.
+
+The scheduler iterates **per user**: the daily recompute and the in-window push
+check loop over every user and operate on that user's routes and push settings.
+The shared Google key is protected by `USER_DAILY_API_BUDGET` — each user's
+daily Routes API calls are counted in `api_usage`, and once over the cap their
+live `/today` lookups serve the stored snapshot (`live: false`) instead of
+spending more quota. So total monthly cost scales with *active* users; size the
+budget and your Google billing alert accordingly.
+
 ## Proactive push
 
-Opt-in. Set `NTFY_TOPIC_URL` and/or `WEBHOOK_URL`. A scheduler job runs every
+Per-user, opt-in. Each user sets their own `ntfy` topic and/or webhook (Account
+tab); the legacy global `NTFY_TOPIC_URL`/`WEBHOOK_URL` env vars only seed the
+admin's settings on first start. A scheduler job runs every
 `PUSH_CHECK_MINUTES` (default 15) and, **only when a commute window is open on a
 configured day**, runs the live `/today` computation per route and pushes when
 `incident_severity` crosses `PUSH_MIN_SEVERITY` (default `alert`). Pushes are

@@ -1,6 +1,11 @@
 import os
 from pathlib import Path
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -24,6 +29,20 @@ CONCURRENT_REQUESTS = int(os.environ.get("CONCURRENT_REQUESTS", "10"))
 
 API_KEY = os.environ.get("API_KEY", "").strip()
 
+# --- Multi-user auth ---------------------------------------------------------
+# Invite-only: an admin account is seeded on first start from these, and creates
+# all other accounts from the UI. If unset, defaults are used and a warning is
+# logged (change the password immediately).
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin").strip()
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "").strip()
+# Session cookie lifetime (days) and whether to mark it Secure. Keep Secure off
+# for plain-http LAN access (e.g. http://nas:8088); turn on behind HTTPS.
+SESSION_TTL_DAYS = int(os.environ.get("SESSION_TTL_DAYS", "30"))
+COOKIE_SECURE = _env_bool("COOKIE_SECURE", False)
+# Per-user daily Google Routes API call budget (shared key, owner pays). 0 =
+# unlimited. When a user is over budget, live lookups degrade to the snapshot.
+USER_DAILY_API_BUDGET = int(os.environ.get("USER_DAILY_API_BUDGET", "250"))
+
 # Proactive push (opt-in). Set either to enable a periodic in-window check that
 # notifies you when live conditions cross PUSH_MIN_SEVERITY. Costs extra Routes
 # API calls only while a commute window is open — see docs/OPERATIONS.md.
@@ -31,10 +50,6 @@ NTFY_TOPIC_URL = os.environ.get("NTFY_TOPIC_URL", "").strip()  # e.g. https://nt
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip()  # generic JSON POST target
 PUSH_MIN_SEVERITY = os.environ.get("PUSH_MIN_SEVERITY", "alert").strip().lower()  # watch|alert
 PUSH_CHECK_MINUTES = int(os.environ.get("PUSH_CHECK_MINUTES", "15"))
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    return os.environ.get(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
 # Bonn real-time street-traffic open data (free, CC-BY, 5-min refresh). A live,

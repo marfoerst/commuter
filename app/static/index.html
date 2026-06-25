@@ -7,13 +7,33 @@
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+<div id="login-view" class="login-view" style="display:none">
+  <form id="login-form" class="login-card">
+    <h1>Commute Optimizer</h1>
+    <p class="login-sub">Sign in to view your commute.</p>
+    <label>Username
+      <input name="username" autocomplete="username" required>
+    </label>
+    <label>Password
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Log in</button>
+    <p id="login-status" class="status"></p>
+  </form>
+</div>
+
+<div id="app-view" style="display:none">
 <header>
   <h1>Commute Optimizer</h1>
   <nav>
     <button class="tab active" data-tab="dashboard">Dashboard</button>
     <button class="tab" data-tab="setup">Setup</button>
+    <button class="tab" data-tab="account">Account</button>
+    <button class="tab admin-only" data-tab="users" style="display:none">Users</button>
   </nav>
+  <span id="whoami" class="whoami"></span>
   <button id="recompute-top" class="ghost" title="Sample now using the saved route">Recompute</button>
+  <button id="logout-btn" class="ghost">Log out</button>
 </header>
 
 <main>
@@ -120,7 +140,71 @@
       <p id="status" class="status"></p>
     </form>
   </section>
+
+  <section id="account" class="panel">
+    <fieldset>
+      <legend>Notifications</legend>
+      <p class="hint">Get a push when your commute turns bad. Leave blank to disable.</p>
+      <form id="notif-form">
+        <label>ntfy topic URL
+          <input name="ntfy_topic_url" placeholder="https://ntfy.sh/your-private-topic">
+        </label>
+        <label>Webhook URL
+          <input name="webhook_url" placeholder="https://example.com/hooks/commute">
+        </label>
+        <label>Notify me at
+          <select name="push_min_severity">
+            <option value="alert">Alert only (likely incident)</option>
+            <option value="watch">Watch &amp; up (heavier than usual)</option>
+          </select>
+        </label>
+        <div class="actions"><button type="submit">Save notifications</button></div>
+        <p id="notif-status" class="status"></p>
+      </form>
+    </fieldset>
+
+    <fieldset>
+      <legend>Change password</legend>
+      <form id="password-form">
+        <label>New password (min 6 chars)
+          <input name="password" type="password" minlength="6" autocomplete="new-password" required>
+        </label>
+        <div class="actions"><button type="submit">Change password</button></div>
+        <p id="password-status" class="status"></p>
+      </form>
+    </fieldset>
+
+    <fieldset>
+      <legend>API token</legend>
+      <p class="hint">For Home Assistant, widgets, or scripts — send it as the
+        <code>X-API-Key</code> header. Keep it secret; regenerating invalidates the old one.</p>
+      <div class="token-row">
+        <input id="api-token" readonly>
+        <button type="button" id="regen-token" class="ghost">Regenerate</button>
+      </div>
+    </fieldset>
+  </section>
+
+  <section id="users" class="panel">
+    <fieldset>
+      <legend>Create user</legend>
+      <form id="newuser-form">
+        <div class="row">
+          <label>Username <input name="username" required></label>
+          <label>Password <input name="password" type="password" minlength="6" required></label>
+          <label class="inline"><input type="checkbox" name="is_admin"> Admin</label>
+        </div>
+        <div class="actions"><button type="submit">Create user</button></div>
+        <p id="newuser-status" class="status"></p>
+      </form>
+    </fieldset>
+    <fieldset>
+      <legend>Users</legend>
+      <div id="user-list"></div>
+    </fieldset>
+  </section>
 </main>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

@@ -4,6 +4,24 @@ All notable changes to the Commute Optimizer.
 
 ## [Unreleased]
 
+### Added — multi-user
+
+- **Multi-user, invite-only accounts.** Each user has their own isolated
+  home/office pair, dashboard, history, Bonn matching, and notifications. An
+  admin account is seeded on first start (`ADMIN_USERNAME`/`ADMIN_PASSWORD`) and
+  creates/manages other users from a new **Users** tab. Upgrading an existing
+  single-user install auto-migrates its routes/history onto the admin.
+- **Username + password login** with a server-side session cookie (stdlib
+  PBKDF2 hashing — no new dependencies). New `users`, `sessions`, and `api_usage`
+  tables; `routes` gains a `user_id`. New endpoints: `login`, `logout`, `me`,
+  `me/password`, `me/notifications`, `me/api-token`, and admin `admin/users…`.
+- **Per-user API token** for programmatic access (`X-API-Key`) — replaces the
+  retired global `API_KEY`. Home-Assistant/widget integrations now scope per user.
+- **Per-user notifications.** ntfy/webhook/min-severity moved from global env to
+  each user's settings; the scheduler recomputes and pushes per user.
+- **Per-user daily Routes API budget** (`USER_DAILY_API_BUDGET`) on the shared
+  Google key; over the cap, live lookups degrade to the stored snapshot.
+
 ### Added — Bonn real-time local traffic
 
 - **Live local-traffic signal (Bonn open data)** — integrates the free, CC-BY

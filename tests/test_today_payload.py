@@ -17,6 +17,7 @@ from app.db.models import (
     set_route_bonn_segments,
     upsert_named_route,
 )
+from app.db.users import create_user
 from app.services.sampling import WEEKDAYS
 
 # Slots every 30 min across the whole day so at least one is in the future
@@ -31,11 +32,13 @@ def seeded(monkeypatch):
         conn.execute("DELETE FROM observations")
         conn.execute("DELETE FROM commute_data")
         conn.execute("DELETE FROM routes")
+        conn.execute("DELETE FROM users")
 
+    uid = create_user("tester", "pw")
     upsert_named_route(
-        "morning", "Home", "Office", "00:00", "23:30", 30, ",".join(WEEKDAYS)
+        uid, "morning", "Home", "Office", "00:00", "23:30", 30, ",".join(WEEKDAYS)
     )
-    route = get_route_by_name("morning")
+    route = get_route_by_name(uid, "morning")
     today = WEEKDAYS[datetime.now().astimezone().weekday()]
 
     # Snapshot: a flat ~30-min forecast for every slot today.
@@ -128,11 +131,13 @@ def test_local_traffic_drives_incident_when_google_clear(monkeypatch):
         conn.execute("DELETE FROM observations")
         conn.execute("DELETE FROM commute_data")
         conn.execute("DELETE FROM routes")
+        conn.execute("DELETE FROM users")
 
+    uid = create_user("tester", "pw")
     upsert_named_route(
-        "morning", "Home", "Office", "00:00", "23:30", 30, ",".join(WEEKDAYS)
+        uid, "morning", "Home", "Office", "00:00", "23:30", 30, ",".join(WEEKDAYS)
     )
-    route = get_route_by_name("morning")
+    route = get_route_by_name(uid, "morning")
     today = WEEKDAYS[now.weekday()]
     samples = [
         {"day_of_week": today, "departure_time": s, "duration_minutes": 30.0}
@@ -143,7 +148,7 @@ def test_local_traffic_drives_incident_when_google_clear(monkeypatch):
         insert_observations(route["id"], samples, source="batch")
     # This route's matched Bonn segment.
     set_route_bonn_segments(route["id"], [42])
-    route = get_route_by_name("morning")  # reload with bonn_segment_ids
+    route = get_route_by_name(uid, "morning")  # reload with bonn_segment_ids
 
     # Google clear: live == typical (30) → no Google-side incident.
     async def fake_duration(client, origin, dest, dep_dt):

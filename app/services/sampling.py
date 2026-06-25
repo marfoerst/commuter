@@ -12,6 +12,8 @@ from app.db.models import (
     insert_commute_samples,
     insert_observations,
 )
+from app.db.users import add_api_usage, get_api_usage_today, list_users
+from app.config import USER_DAILY_API_BUDGET
 from app.services.google_routes import compute_route_duration
 
 log = logging.getLogger(__name__)
@@ -93,20 +95,33 @@ async def sample_route(route: dict, only_days: list[str] | None = None) -> list[
     return results
 
 
-async def recompute_all_active_routes(only_today: bool = False) -> dict[str, int]:
-    """Resample active routes. Returns {route_name: sample_count}.
+def _planned_calls(route: dict, only_days: list[str] | None) -> int:
+    """How many Google Routes API calls a full sample of this route will make."""
+    weekdays = [w.strip() for w in route["weekdays"].split(",") if w.strip()]
+    if only_days is not None:
+        only = set(only_days)
+        weekdays = [w for w in weekdays if w in only]
+    slots = generate_time_slots(
+        route["time_window_start"], route["time_window_end"], route["interval_minutes"]
+    )
+    return len(weekdays) * len(slots)
+
+
+async def recompute_user_routes(
+    user_id: int, only_today: bool = False
+) -> dict[str, int]:
+    """Resample one user's active routes. Returns {route_name: sample_count}.
 
     only_today=False (manual /recompute): re-sample the full week and replace
     every route's data — used to seed/reset the heatmap.
 
-    only_today=True (daily batch): re-sample just today's weekday column and
-    replace only that day, leaving the rest of the week intact. This avoids
-    re-forecasting the whole week every morning (the dominant source of Google
-    Routes API calls) while keeping each day's forecast fresh on its own day.
+    only_today=True (daily batch): re-sample just today's weekday column.
+
+    Records Google Routes API calls against the user's daily budget and skips
+    (best-effort) once the budget is exhausted, so the shared key stays bounded.
     """
-    routes = get_all_active_routes()
+    routes = get_all_active_routes(user_id)
     if not routes:
-        log.info("No active routes configured; skipping recompute")
         return {}
 
     today_name: str | None = None
@@ -117,7 +132,16 @@ async def recompute_all_active_routes(only_today: bool = False) -> dict[str, int
 
     counts: dict[str, int] = {}
     for route in routes:
+        if USER_DAILY_API_BUDGET:
+            spent = get_api_usage_today(user_id)
+            if spent + _planned_calls(route, only_days) > USER_DAILY_API_BUDGET:
+                log.warning(
+                    "User %s over daily API budget; skipping recompute of '%s'",
+                    user_id, route["name"],
+                )
+                continue
         samples = await sample_route(route, only_days=only_days)
+        add_api_usage(user_id, _planned_calls(route, only_days))
         if only_today:
             clear_day_data(route["id"], today_name)
         else:
@@ -128,8 +152,18 @@ async def recompute_all_active_routes(only_today: bool = False) -> dict[str, int
         insert_observations(route["id"], samples, source="batch")
         counts[route["name"]] = len(samples)
         log.info(
-            "Stored %d samples for route '%s' (id=%s)%s",
-            len(samples), route["name"], route["id"],
+            "Stored %d samples for user %s route '%s' (id=%s)%s",
+            len(samples), user_id, route["name"], route["id"],
             f" [today only: {today_name}]" if only_today else "",
         )
     return counts
+
+
+async def recompute_all_users(only_today: bool = False) -> dict[int, dict[str, int]]:
+    """Recompute every user's routes (daily batch). Returns {user_id: counts}."""
+    out: dict[int, dict[str, int]] = {}
+    for user in list_users():
+        counts = await recompute_user_routes(user["id"], only_today=only_today)
+        if counts:
+            out[user["id"]] = counts
+    return out

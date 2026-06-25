@@ -3,10 +3,11 @@ import logging
 from datetime import datetime, time, timedelta
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.config import API_KEY, BONN_TRAFFIC_ENABLED
+from app.api.deps import require_user
+from app.config import BONN_TRAFFIC_ENABLED, USER_DAILY_API_BUDGET
 from app.db.models import (
     get_all_active_routes,
     get_day_data,
@@ -18,6 +19,7 @@ from app.db.models import (
     set_route_bonn_segments,
     upsert_named_route,
 )
+from app.db.users import add_api_usage, get_api_usage_today
 from app.services.bonn_traffic import (
     fetch_traffic,
     match_route_segments,
@@ -28,7 +30,7 @@ from app.services.google_routes import (
     compute_route_duration,
     fetch_route_polyline,
 )
-from app.services.sampling import WEEKDAYS, recompute_all_active_routes
+from app.services.sampling import WEEKDAYS, recompute_user_routes
 from app.services.stats import (
     MIN_SAMPLES_FOR_STATS,
     classify_incident,
@@ -57,11 +59,6 @@ def _is_active_day(route: dict, weekday_name: str) -> bool:
     """
     wd = _route_weekdays(route)
     return (not wd) or (weekday_name in wd)
-
-
-def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 # ---------------------------------------------------------------------------
@@ -103,18 +100,18 @@ async def health():
 
 
 @router.get("/config")
-async def get_config(_: None = Depends(require_api_key)):
+async def get_config(user: dict = Depends(require_user)):
     return {
-        "morning": get_route_by_name("morning"),
-        "evening": get_route_by_name("evening"),
+        "morning": get_route_by_name(user["id"], "morning"),
+        "evening": get_route_by_name(user["id"], "evening"),
     }
 
 
-async def _refresh_bonn_segments() -> None:
-    """Re-match every active route's geometry to the Bonn traffic feed and persist
-    the matched strecke_ids. Best-effort: any failure leaves prior ids intact and
-    never propagates (config/recompute must succeed regardless). No-op unless
-    Bonn integration is enabled.
+async def _refresh_bonn_segments(user_id: int) -> None:
+    """Re-match a user's active routes' geometry to the Bonn traffic feed and
+    persist the matched strecke_ids. Best-effort: any failure leaves prior ids
+    intact and never propagates (config/recompute must succeed regardless).
+    No-op unless Bonn integration is enabled.
 
     Runs at config-save and recompute time because the match is stable per route
     (it depends on the corridor, not on live traffic), so the live /today path
@@ -123,7 +120,7 @@ async def _refresh_bonn_segments() -> None:
     if not BONN_TRAFFIC_ENABLED:
         return
     try:
-        routes = get_all_active_routes()
+        routes = get_all_active_routes(user_id)
         if not routes:
             return
         async with httpx.AsyncClient() as client:
@@ -146,8 +143,9 @@ async def _refresh_bonn_segments() -> None:
 
 
 @router.post("/config")
-async def set_config(cfg: FullConfig, _: None = Depends(require_api_key)):
+async def set_config(cfg: FullConfig, user: dict = Depends(require_user)):
     morning_id = upsert_named_route(
+        user["id"],
         "morning",
         cfg.origin,
         cfg.destination,
@@ -159,6 +157,7 @@ async def set_config(cfg: FullConfig, _: None = Depends(require_api_key)):
         cfg.baseline_since,
     )
     evening_id = upsert_named_route(
+        user["id"],
         "evening",
         cfg.destination,  # reversed
         cfg.origin,
@@ -170,7 +169,7 @@ async def set_config(cfg: FullConfig, _: None = Depends(require_api_key)):
         cfg.baseline_since,
     )
     # Addresses may have changed → re-match Bonn segments for both directions.
-    await _refresh_bonn_segments()
+    await _refresh_bonn_segments(user["id"])
     return {
         "status": "ok",
         "morning_id": morning_id,
@@ -179,12 +178,12 @@ async def set_config(cfg: FullConfig, _: None = Depends(require_api_key)):
 
 
 @router.post("/recompute")
-async def recompute(_: None = Depends(require_api_key)):
-    routes = get_all_active_routes()
+async def recompute(user: dict = Depends(require_user)):
+    routes = get_all_active_routes(user["id"])
     if not routes:
         raise HTTPException(400, "No active route configured")
-    counts = await recompute_all_active_routes()
-    await _refresh_bonn_segments()
+    counts = await recompute_user_routes(user["id"])
+    await _refresh_bonn_segments(user["id"])
     return {"status": "ok", "samples": counts}
 
 
@@ -432,14 +431,27 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     # in parallel with this first batch.
     first_batch = snapshot_candidates[:TOP_N_LIVE]
     remaining = snapshot_candidates[TOP_N_LIVE:]
-    tasks = [
-        compute_route_duration(client, route["origin"], route["destination"], live_now_dt)
-    ]
-    tasks.extend(
-        compute_route_duration(client, route["origin"], route["destination"], c["_dep_dt"])
-        for c in first_batch
+
+    # Per-user daily budget on the shared Google key. When exhausted, serve the
+    # snapshot forecast (no live calls) instead of spending more quota.
+    user_id = route.get("user_id")
+    over_budget = bool(USER_DAILY_API_BUDGET) and (
+        get_api_usage_today(user_id) >= USER_DAILY_API_BUDGET
     )
-    results = await asyncio.gather(*tasks)
+    calls_made = 0
+
+    if over_budget:
+        results = [None] * (1 + len(first_batch))
+    else:
+        tasks = [
+            compute_route_duration(client, route["origin"], route["destination"], live_now_dt)
+        ]
+        tasks.extend(
+            compute_route_duration(client, route["origin"], route["destination"], c["_dep_dt"])
+            for c in first_batch
+        )
+        results = await asyncio.gather(*tasks)
+        calls_made += len(tasks)
     current_live = results[0]
 
     live_candidates: list[dict] = []
@@ -458,6 +470,7 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     probe_count = 1
     while (
         not live_candidates
+        and not over_budget
         and deadline_dt is not None
         and remaining
         and probe_count < MAX_PROBE_BATCHES
@@ -470,6 +483,7 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
                 for c in next_batch
             ]
         )
+        calls_made += len(next_batch)
         for c, live_dur in zip(next_batch, durs):
             probed.append({"_c": c, "_live": live_dur})
             built = _build_live_candidate(
@@ -493,6 +507,10 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
     ]
     if live_obs:
         insert_observations(route["id"], live_obs, source="live")
+
+    # Charge the live calls we actually made against the user's daily budget.
+    if calls_made:
+        add_api_usage(user_id, calls_made)
 
     if current_live is None and day_data:
         fallback = _pick_current_slot(day_data, now.replace(tzinfo=None))
@@ -521,8 +539,12 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
         "destination": route["destination"],
         "current_duration": round(current_live),
         "arrival_deadline": deadline_str,
-        "live": True,
+        # Over budget → these numbers come from the stored snapshot, not a live
+        # Routes API call this request.
+        "live": not over_budget,
     }
+    if over_budget:
+        payload["note"] = "Daily live-lookup budget reached; showing the latest snapshot."
 
     if not live_candidates:
         reason = (
@@ -564,9 +586,14 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
 
     # Which crossing/detour is fastest for the recommended departure. One extra
     # billable call that returns all alternatives at once; best-effort only.
-    route_options = await compute_route_alternatives(
-        client, route["origin"], route["destination"], best["_dep_dt"]
-    )
+    # Skipped (and not charged) when the user is over their daily budget.
+    if over_budget:
+        route_options = []
+    else:
+        route_options = await compute_route_alternatives(
+            client, route["origin"], route["destination"], best["_dep_dt"]
+        )
+        add_api_usage(user_id, 1)
 
     payload.update(
         {
@@ -598,8 +625,8 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
 
 
 @router.get("/commute/today")
-async def commute_today_all(_: None = Depends(require_api_key)):
-    routes = {r["name"]: r for r in get_all_active_routes()}
+async def commute_today_all(user: dict = Depends(require_user)):
+    routes = {r["name"]: r for r in get_all_active_routes(user["id"])}
     if not routes:
         raise HTTPException(404, "No active route configured")
     async with httpx.AsyncClient() as client:
@@ -612,11 +639,11 @@ async def commute_today_all(_: None = Depends(require_api_key)):
 
 @router.get("/commute/today/{direction}")
 async def commute_today_direction(
-    direction: str, _: None = Depends(require_api_key)
+    direction: str, user: dict = Depends(require_user)
 ):
     if direction not in VALID_DIRECTIONS:
         raise HTTPException(400, f"Invalid direction. Use one of {VALID_DIRECTIONS}.")
-    route = get_route_by_name(direction)
+    route = get_route_by_name(user["id"], direction)
     if not route:
         raise HTTPException(404, f"No active '{direction}' route configured")
     async with httpx.AsyncClient() as client:
@@ -627,7 +654,7 @@ async def commute_today_direction(
 async def commute_today_next(
     direction: str,
     minutes: int = 60,
-    _: None = Depends(require_api_key),
+    user: dict = Depends(require_user),
 ):
     """Best departure(s) within the next N minutes from now.
 
@@ -643,7 +670,7 @@ async def commute_today_next(
     if minutes < 1 or minutes > 360:
         raise HTTPException(400, "minutes must be in [1, 360]")
 
-    route = get_route_by_name(direction)
+    route = get_route_by_name(user["id"], direction)
     if not route:
         raise HTTPException(404, f"No active '{direction}' route configured")
 
@@ -742,8 +769,8 @@ def _heatmap_payload(route: dict) -> list[dict]:
 
 
 @router.get("/commute/heatmap")
-async def commute_heatmap_all(_: None = Depends(require_api_key)):
-    routes = {r["name"]: r for r in get_all_active_routes()}
+async def commute_heatmap_all(user: dict = Depends(require_user)):
+    routes = {r["name"]: r for r in get_all_active_routes(user["id"])}
     if not routes:
         raise HTTPException(404, "No active route configured")
     return {
@@ -755,11 +782,11 @@ async def commute_heatmap_all(_: None = Depends(require_api_key)):
 
 @router.get("/commute/heatmap/{direction}")
 async def commute_heatmap_direction(
-    direction: str, _: None = Depends(require_api_key)
+    direction: str, user: dict = Depends(require_user)
 ):
     if direction not in VALID_DIRECTIONS:
         raise HTTPException(400, f"Invalid direction. Use one of {VALID_DIRECTIONS}.")
-    route = get_route_by_name(direction)
+    route = get_route_by_name(user["id"], direction)
     if not route:
         raise HTTPException(404, f"No active '{direction}' route configured")
     return _heatmap_payload(route)

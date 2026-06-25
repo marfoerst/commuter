@@ -11,26 +11,28 @@ from app.services.stats import summarize
 RECENT_DAYS = 35
 
 
-def get_route_by_name(name: str) -> dict | None:
+def get_route_by_name(user_id: int, name: str) -> dict | None:
     with get_conn() as conn:
         cur = conn.execute(
-            "SELECT * FROM routes WHERE name = ? AND is_active = 1 "
+            "SELECT * FROM routes WHERE user_id = ? AND name = ? AND is_active = 1 "
             "ORDER BY id DESC LIMIT 1",
-            (name,),
+            (user_id, name),
         )
         row = cur.fetchone()
         return dict(row) if row else None
 
 
-def get_all_active_routes() -> list[dict]:
+def get_all_active_routes(user_id: int) -> list[dict]:
     with get_conn() as conn:
         cur = conn.execute(
-            "SELECT * FROM routes WHERE is_active = 1 ORDER BY name"
+            "SELECT * FROM routes WHERE user_id = ? AND is_active = 1 ORDER BY name",
+            (user_id,),
         )
         return [dict(r) for r in cur.fetchall()]
 
 
 def upsert_named_route(
+    user_id: int,
     name: str,
     origin: str,
     destination: str,
@@ -41,18 +43,22 @@ def upsert_named_route(
     arrival_deadline: str | None = None,
     baseline_since: str | None = None,
 ) -> int:
-    """Deactivate any previous row with this name, insert a new active one."""
+    """Deactivate this user's previous row with this name, insert a new active one."""
     with get_conn() as conn:
-        conn.execute("UPDATE routes SET is_active = 0 WHERE name = ?", (name,))
+        conn.execute(
+            "UPDATE routes SET is_active = 0 WHERE user_id = ? AND name = ?",
+            (user_id, name),
+        )
         cur = conn.execute(
             """
             INSERT INTO routes
-                (name, origin, destination, time_window_start, time_window_end,
-                 interval_minutes, weekdays, arrival_deadline, baseline_since,
-                 is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                (user_id, name, origin, destination, time_window_start,
+                 time_window_end, interval_minutes, weekdays, arrival_deadline,
+                 baseline_since, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
+                user_id,
                 name,
                 origin,
                 destination,

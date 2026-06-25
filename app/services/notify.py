@@ -13,47 +13,51 @@ import logging
 
 import httpx
 
-from app.config import NTFY_TOPIC_URL, PUSH_MIN_SEVERITY, WEBHOOK_URL
-
 log = logging.getLogger(__name__)
 
 SEVERITY_RANK = {"clear": 0, "watch": 1, "alert": 2}
 
 
-def push_enabled() -> bool:
-    return bool(NTFY_TOPIC_URL or WEBHOOK_URL)
+def user_push_enabled(user: dict) -> bool:
+    """True if this user has at least one push sink configured."""
+    return bool(user.get("ntfy_topic_url") or user.get("webhook_url"))
 
 
-def meets_threshold(severity: str) -> bool:
-    threshold = SEVERITY_RANK.get(PUSH_MIN_SEVERITY, 2)
+def meets_threshold(severity: str, min_severity: str = "alert") -> bool:
+    threshold = SEVERITY_RANK.get(min_severity, 2)
     return SEVERITY_RANK.get(severity, 0) >= threshold
 
 
 async def send_push(
     client: httpx.AsyncClient,
+    user: dict,
     title: str,
     message: str,
     severity: str,
     data: dict | None = None,
 ) -> None:
-    if NTFY_TOPIC_URL:
+    """Best-effort push to a single user's configured sinks (ntfy / webhook)."""
+    ntfy_url = user.get("ntfy_topic_url")
+    webhook_url = user.get("webhook_url")
+
+    if ntfy_url:
         priority = "urgent" if severity == "alert" else "high"
         tags = "rotating_light" if severity == "alert" else "warning"
         try:
             await client.post(
-                NTFY_TOPIC_URL,
+                ntfy_url,
                 content=message.encode("utf-8"),
                 headers={"Title": title, "Priority": priority, "Tags": tags},
                 timeout=15.0,
             )
         except Exception as e:  # noqa: BLE001 - best-effort
-            log.warning("ntfy push failed: %s", e)
+            log.warning("ntfy push failed for user %s: %s", user.get("id"), e)
 
-    if WEBHOOK_URL:
+    if webhook_url:
         payload = {"title": title, "message": message, "severity": severity}
         if data:
             payload.update(data)
         try:
-            await client.post(WEBHOOK_URL, json=payload, timeout=15.0)
+            await client.post(webhook_url, json=payload, timeout=15.0)
         except Exception as e:  # noqa: BLE001 - best-effort
-            log.warning("webhook push failed: %s", e)
+            log.warning("webhook push failed for user %s: %s", user.get("id"), e)

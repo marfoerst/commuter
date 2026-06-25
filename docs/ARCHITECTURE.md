@@ -21,18 +21,22 @@ commuter/
     ├── main.py             ← FastAPI app + lifespan (init DB, seed, start scheduler)
     ├── config.py           ← env var reading
     ├── api/
-    │   └── routes.py       ← all REST endpoints, including live re-rank logic
+    │   ├── routes.py       ← commute REST endpoints (live re-rank), user-scoped
+    │   ├── auth_routes.py  ← login/logout/me + admin user management endpoints
+    │   └── deps.py         ← auth dependencies (require_user / require_admin)
     ├── services/
     │   ├── google_routes.py    ← Google Routes API v2 client (+ alternatives, polyline)
     │   ├── bonn_traffic.py     ← Bonn realtime feed: fetch/cache, polyline match, status
-    │   ├── sampling.py         ← batch sampler (parallel, semaphore-bounded)
+    │   ├── auth.py             ← password hashing (PBKDF2) + token helpers
+    │   ├── sampling.py         ← batch sampler (parallel, semaphore-bounded), per-user
     │   ├── stats.py            ← pure stats: typical/p90, incident, window edge
-    │   └── notify.py           ← opt-in push (ntfy / webhook)
+    │   └── notify.py           ← per-user push (ntfy / webhook)
     ├── scheduler/
     │   └── jobs.py         ← APScheduler: daily recompute + in-window push check
     ├── db/
-    │   ├── database.py     ← SQLite schema + lightweight migrations
-    │   └── models.py       ← DAO helpers (+ observation history / stats queries)
+    │   ├── database.py     ← SQLite schema + lightweight migrations (users, routes…)
+    │   ├── models.py       ← route/observation DAOs (user-scoped), stats queries
+    │   └── users.py        ← users / sessions / api_usage DAOs
     └── static/
         ├── index.html      ← dashboard UI
         ├── styles.css

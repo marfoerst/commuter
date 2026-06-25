@@ -10,3 +10,6 @@ __pycache__/
 .vscode/
 .scratch/
 .deploy/
+
+# Playwright MCP scratch artifacts
+.playwright-mcp/

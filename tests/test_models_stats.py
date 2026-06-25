@@ -4,6 +4,7 @@ import pytest
 
 from app.db.database import get_conn, init_db
 from app.db.models import get_day_slot_stats, get_route_by_name, upsert_named_route
+from app.db.users import create_user
 
 
 @pytest.fixture
@@ -13,10 +14,12 @@ def route_id():
     with get_conn() as conn:
         conn.execute("DELETE FROM observations")
         conn.execute("DELETE FROM routes")
+        conn.execute("DELETE FROM users")
+    uid = create_user("tester", "pw")
     upsert_named_route(
-        "morning", "A", "B", "07:00", "09:00", 30, "Mon,Tue,Wed,Thu,Fri"
+        uid, "morning", "A", "B", "07:00", "09:00", 30, "Mon,Tue,Wed,Thu,Fri"
     )
-    return get_route_by_name("morning")["id"]
+    return get_route_by_name(uid, "morning")["id"]
 
 
 def _add(rid, slot, dur, days_ago):

@@ -25,6 +25,50 @@ nav { display: flex; gap: 6px; flex: 1; }
 }
 .ghost:hover { color: #e6e8eb; border-color: #3a4150; }
 
+.whoami { font-size: 12px; color: #9aa0a6; }
+
+/* Login */
+.login-view {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.login-card {
+  width: 100%; max-width: 340px; background: #161922; border: 1px solid #222831;
+  border-radius: 12px; padding: 28px 24px; display: flex; flex-direction: column; gap: 14px;
+}
+.login-card h1 { font-size: 20px; }
+.login-card .login-sub { margin: 0 0 4px; font-size: 13px; color: #9aa0a6; }
+.login-card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #c2c8d0; }
+.login-card input {
+  background: #0f1115; border: 1px solid #2a2d33; border-radius: 6px;
+  color: #e6e8eb; padding: 8px 10px; font-size: 14px;
+}
+.login-card button[type="submit"] {
+  background: #2563eb; color: #fff; border: none; border-radius: 6px;
+  padding: 9px 12px; font-size: 14px; cursor: pointer; margin-top: 4px;
+}
+.login-card button[type="submit"]:hover { background: #1d4ed8; }
+
+/* Account / token */
+.token-row { display: flex; gap: 8px; align-items: center; }
+.token-row input {
+  flex: 1; background: #0f1115; border: 1px solid #2a2d33; border-radius: 6px;
+  color: #9aa0a6; padding: 7px 10px; font-size: 12px; font-family: monospace;
+}
+
+/* Admin users */
+.user-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 0; border-bottom: 1px solid #1f232b; font-size: 14px;
+}
+.user-actions { display: flex; gap: 8px; }
+.badge {
+  font-size: 10px; color: #5fd07a; border: 1px solid #2f5a3a; border-radius: 999px;
+  padding: 1px 7px; margin-left: 6px;
+}
+.ghost.danger { color: #ff7676; border-color: #4a1f1f; }
+.ghost.danger:hover { border-color: #6b2a2a; }
+
 main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 .panel { display: none; }
 .panel.active { display: block; }

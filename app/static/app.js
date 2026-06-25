@@ -347,6 +347,10 @@ function renderHeatmap(direction, data) {
 
 async function loadToday() {
   const r = await fetch("/api/commute/today");
+  if (r.status === 401) {
+    showLogin("Session expired — please log in again.");
+    return;
+  }
   if (!r.ok) {
     DIRECTIONS.forEach((dir) => renderSummary(dir, null));
     return;
@@ -424,5 +428,168 @@ async function loadAll() {
   await Promise.all([loadToday(), loadHeatmap()]);
 }
 
-loadConfig();
-loadAll();
+// --- Auth + views ---------------------------------------------------------
+const loginView = document.getElementById("login-view");
+const appView = document.getElementById("app-view");
+const loginForm = document.getElementById("login-form");
+const loginStatus = document.getElementById("login-status");
+const whoami = document.getElementById("whoami");
+
+let currentUser = null;
+
+function showLogin(msg) {
+  appView.style.display = "none";
+  loginView.style.display = "flex";
+  loginStatus.textContent = msg || "";
+}
+
+function showApp(user) {
+  currentUser = user;
+  loginView.style.display = "none";
+  appView.style.display = "block";
+  whoami.textContent = user.username + (user.is_admin ? " · admin" : "");
+  document.querySelectorAll(".admin-only").forEach((el) => {
+    el.style.display = user.is_admin ? "" : "none";
+  });
+  const nf = document.getElementById("notif-form");
+  nf.ntfy_topic_url.value = user.ntfy_topic_url || "";
+  nf.webhook_url.value = user.webhook_url || "";
+  nf.push_min_severity.value = user.push_min_severity || "alert";
+  document.getElementById("api-token").value = user.api_token || "";
+  loadConfig();
+  loadAll();
+  if (user.is_admin) loadUsers();
+}
+
+async function checkAuth() {
+  const r = await fetch("/api/me");
+  if (r.ok) showApp((await r.json()).user);
+  else showLogin();
+}
+
+loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  loginStatus.textContent = "";
+  const fd = new FormData(loginForm);
+  const r = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: fd.get("username"), password: fd.get("password") }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    loginStatus.textContent = err.detail || "Login failed.";
+    return;
+  }
+  loginForm.reset();
+  showApp((await r.json()).user);
+});
+
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST" });
+  currentUser = null;
+  showLogin("Logged out.");
+});
+
+document.getElementById("notif-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const r = await fetch("/api/me/notifications", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ntfy_topic_url: fd.get("ntfy_topic_url") || null,
+      webhook_url: fd.get("webhook_url") || null,
+      push_min_severity: fd.get("push_min_severity"),
+    }),
+  });
+  document.getElementById("notif-status").textContent = r.ok ? "Saved." : "Save failed.";
+});
+
+document.getElementById("password-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const r = await fetch("/api/me/password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: fd.get("password") }),
+  });
+  if (r.ok) {
+    e.target.reset();
+    showLogin("Password changed — please log in again.");
+  } else {
+    document.getElementById("password-status").textContent = "Change failed (min 6 chars).";
+  }
+});
+
+document.getElementById("regen-token").addEventListener("click", async () => {
+  const r = await fetch("/api/me/api-token", { method: "POST" });
+  if (r.ok) document.getElementById("api-token").value = (await r.json()).api_token;
+});
+
+async function loadUsers() {
+  const r = await fetch("/api/admin/users");
+  if (!r.ok) return;
+  const users = (await r.json()).users;
+  document.getElementById("user-list").innerHTML = users
+    .map(
+      (u) => `
+      <div class="user-row">
+        <span class="user-name">${u.username}${u.is_admin ? ' <span class="badge">admin</span>' : ""}</span>
+        <span class="user-actions">
+          <button class="ghost" data-act="reset" data-id="${u.id}" data-name="${u.username}">Reset password</button>
+          <button class="ghost danger" data-act="delete" data-id="${u.id}" data-name="${u.username}">Delete</button>
+        </span>
+      </div>`
+    )
+    .join("");
+}
+
+document.getElementById("user-list").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const { act, id, name } = btn.dataset;
+  if (act === "reset") {
+    const pw = prompt(`New password for ${name} (min 6 chars):`);
+    if (!pw) return;
+    const r = await fetch(`/api/admin/users/${id}/password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pw }),
+    });
+    alert(r.ok ? "Password reset." : "Failed (min 6 chars).");
+  } else if (act === "delete") {
+    if (!confirm(`Delete user ${name} and all their data?`)) return;
+    const r = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
+    if (r.ok) loadUsers();
+    else {
+      const err = await r.json().catch(() => ({}));
+      alert(err.detail || "Delete failed.");
+    }
+  }
+});
+
+document.getElementById("newuser-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const r = await fetch("/api/admin/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: fd.get("username"),
+      password: fd.get("password"),
+      is_admin: fd.get("is_admin") === "on",
+    }),
+  });
+  const st = document.getElementById("newuser-status");
+  if (r.ok) {
+    e.target.reset();
+    st.textContent = "User created.";
+    loadUsers();
+  } else {
+    const err = await r.json().catch(() => ({}));
+    st.textContent = err.detail || "Create failed.";
+  }
+});
+
+checkAuth();

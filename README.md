@@ -105,7 +105,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | `SCHEDULER_HOUR`            | `4`                    | Daily recompute hour (in `TZ`)                |
 | `SCHEDULER_MINUTE`          | `0`                    | Daily recompute minute                        |
 | `CONCURRENT_REQUESTS`       | `10`                   | Max parallel Routes API calls per recompute   |
-| `API_KEY`                   | _(empty)_              | If set, all `/api/*` calls need `X-API-Key`   |
+| `ADMIN_USERNAME`            | `admin`                | Seeded admin account username (first start)   |
+| `ADMIN_PASSWORD`            | _(default + warning)_  | Seeded admin password — set before first start |
+| `SESSION_TTL_DAYS`          | `30`                   | Login session cookie lifetime                  |
+| `COOKIE_SECURE`             | `false`                | Mark the session cookie Secure (HTTPS only)    |
+| `USER_DAILY_API_BUDGET`     | `250`                  | Per-user daily Routes API call cap (0 = off)   |
 | `NTFY_TOPIC_URL`            | _(empty)_              | Enable push via an ntfy topic URL             |
 | `WEBHOOK_URL`               | _(empty)_              | Enable push via a generic JSON POST           |
 | `PUSH_MIN_SEVERITY`         | `alert`                | Push threshold: `watch` or `alert`            |
@@ -121,10 +125,33 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 Push is opt-in: the periodic check only runs (and only spends Routes API calls)
 when `NTFY_TOPIC_URL` or `WEBHOOK_URL` is set **and** a commute window is open.
 
+## Multi-user & authentication
+
+The app is **multi-user, invite-only**. Each user has their own home/office
+pair, dashboard, history, and notifications — fully isolated from other users.
+There is no public signup: an **admin** account is seeded on first start from
+`ADMIN_USERNAME` / `ADMIN_PASSWORD`, and the admin creates other accounts from
+the **Users** tab.
+
+- **Login** is username + password with an HTTP-only session cookie. Set
+  `ADMIN_PASSWORD` before first start; the seeded admin should change it (and can
+  reset any user's password). When upgrading an existing single-user install,
+  the previous routes/history are automatically migrated to the admin account.
+- **Programmatic access** (Home Assistant, widgets, scripts) uses each user's
+  personal **API token** (Account tab) sent as `X-API-Key: <token>`. The old
+  global `API_KEY` is retired.
+- **Cost**: all users share one Google key (you pay). `USER_DAILY_API_BUDGET`
+  caps each user's daily Routes API calls; over the cap, that user's live
+  lookups fall back to the stored snapshot instead of spending more quota.
+
 ## REST API
 
-All endpoints return JSON. If `API_KEY` is set, send `X-API-Key: <key>` on
-every request.
+All endpoints return JSON and require authentication — either the session cookie
+(after `POST /api/login`) or an `X-API-Key: <token>` header. Auth endpoints:
+`POST /api/login`, `POST /api/logout`, `GET /api/me`, `POST /api/me/password`,
+`PUT /api/me/notifications`, `POST /api/me/api-token`; admin-only:
+`GET|POST /api/admin/users`, `POST /api/admin/users/{id}/password`,
+`DELETE /api/admin/users/{id}`.
 
 ### `GET /api/health`
 ```json
