@@ -6,7 +6,7 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from app.config import API_KEY
+from app.config import API_KEY, BONN_TRAFFIC_ENABLED
 from app.db.models import (
     get_all_active_routes,
     get_day_data,
@@ -14,11 +14,19 @@ from app.db.models import (
     get_heatmap,
     get_route_by_name,
     insert_observations,
+    parse_bonn_segment_ids,
+    set_route_bonn_segments,
     upsert_named_route,
+)
+from app.services.bonn_traffic import (
+    fetch_traffic,
+    match_route_segments,
+    summarize_local_traffic,
 )
 from app.services.google_routes import (
     compute_route_alternatives,
     compute_route_duration,
+    fetch_route_polyline,
 )
 from app.services.sampling import WEEKDAYS, recompute_all_active_routes
 from app.services.stats import (
@@ -26,6 +34,9 @@ from app.services.stats import (
     classify_incident,
     window_edge_hint,
 )
+
+# Worst-first ranking shared by incident-severity comparisons.
+SEVERITY_RANK = {"alert": 2, "watch": 1, "clear": 0}
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +110,41 @@ async def get_config(_: None = Depends(require_api_key)):
     }
 
 
+async def _refresh_bonn_segments() -> None:
+    """Re-match every active route's geometry to the Bonn traffic feed and persist
+    the matched strecke_ids. Best-effort: any failure leaves prior ids intact and
+    never propagates (config/recompute must succeed regardless). No-op unless
+    Bonn integration is enabled.
+
+    Runs at config-save and recompute time because the match is stable per route
+    (it depends on the corridor, not on live traffic), so the live /today path
+    never pays for geometry or matching.
+    """
+    if not BONN_TRAFFIC_ENABLED:
+        return
+    try:
+        routes = get_all_active_routes()
+        if not routes:
+            return
+        async with httpx.AsyncClient() as client:
+            features = await fetch_traffic(client)
+            if not features:
+                return
+            for route in routes:
+                poly = await fetch_route_polyline(
+                    client, route["origin"], route["destination"]
+                )
+                if not poly:
+                    continue
+                ids = match_route_segments(poly, features)
+                set_route_bonn_segments(route["id"], ids)
+                log.info(
+                    "Matched %d Bonn segment(s) to route '%s'", len(ids), route["name"]
+                )
+    except Exception as e:  # noqa: BLE001 — enrichment only, never block config
+        log.warning("Bonn segment refresh failed: %s", e)
+
+
 @router.post("/config")
 async def set_config(cfg: FullConfig, _: None = Depends(require_api_key)):
     morning_id = upsert_named_route(
@@ -123,6 +169,8 @@ async def set_config(cfg: FullConfig, _: None = Depends(require_api_key)):
         cfg.evening.arrival_deadline,
         cfg.baseline_since,
     )
+    # Addresses may have changed → re-match Bonn segments for both directions.
+    await _refresh_bonn_segments()
     return {
         "status": "ok",
         "morning_id": morning_id,
@@ -136,6 +184,7 @@ async def recompute(_: None = Depends(require_api_key)):
     if not routes:
         raise HTTPException(400, "No active route configured")
     counts = await recompute_all_active_routes()
+    await _refresh_bonn_segments()
     return {"status": "ok", "samples": counts}
 
 
@@ -291,6 +340,47 @@ def _incident_note(severity: str, delta: int, baseline_kind: str = "typical") ->
     if severity == "watch":
         return f"Heavier traffic than {ref} (+{delta} min)."
     return "Conditions normal."
+
+
+def _bonn_note(lt: dict) -> str:
+    """One-line description of the Bonn local-traffic signal for incident notes."""
+    n = len(lt.get("congested") or [])
+    status = lt.get("worst_status") or "congestion"
+    spd = lt.get("min_speed_kmh")
+    spd_txt = f", min {spd} km/h" if spd is not None else ""
+    seg = "segment" if n == 1 else "segments"
+    return f"Bonn live traffic: {status} on {n} route {seg}{spd_txt}."
+
+
+async def _attach_local_traffic(
+    client: httpx.AsyncClient, route: dict, payload: dict
+) -> None:
+    """Attach the Bonn local-traffic block and fold its severity into the payload.
+
+    Best-effort: no feed, no matched segments, or any failure leaves the payload
+    unchanged. When the Bonn signal is at least as severe as the Google-derived
+    one, it (co-)drives ``incident_severity`` and is appended to ``incident_note``.
+    """
+    if not BONN_TRAFFIC_ENABLED:
+        return
+    ids = parse_bonn_segment_ids(route)
+    if not ids:
+        return
+    features = await fetch_traffic(client)
+    lt = summarize_local_traffic(features, ids)
+    if not lt:
+        return
+    payload["local_traffic"] = lt
+
+    bonn_sev = lt["severity"]
+    cur_sev = payload.get("incident_severity", "clear")
+    if SEVERITY_RANK[bonn_sev] >= SEVERITY_RANK[cur_sev] and bonn_sev != "clear":
+        payload["incident_severity"] = bonn_sev
+        base_note = payload.get("incident_note") or ""
+        if base_note in ("", "Conditions normal."):
+            payload["incident_note"] = _bonn_note(lt)
+        else:
+            payload["incident_note"] = f"{base_note} {_bonn_note(lt)}"
 
 
 async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
@@ -460,6 +550,7 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
                 "note": reason,
             }
         )
+        await _attach_local_traffic(client, route, payload)
         return payload
 
     best = live_candidates[0]
@@ -497,6 +588,7 @@ async def _today_payload(client: httpx.AsyncClient, route: dict) -> dict:
             ),
         }
     )
+    await _attach_local_traffic(client, route, payload)
     return payload
 
 

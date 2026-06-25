@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from typing import Iterable
 
@@ -64,6 +65,26 @@ def upsert_named_route(
             ),
         )
         return int(cur.lastrowid)
+
+
+def set_route_bonn_segments(route_id: int, ids: list[int]) -> None:
+    """Persist the matched Bonn strecke_ids for a route as a JSON list."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE routes SET bonn_segment_ids = ? WHERE id = ?",
+            (json.dumps(sorted(set(int(i) for i in ids))), route_id),
+        )
+
+
+def parse_bonn_segment_ids(route: dict) -> list[int]:
+    """Read a route row's stored bonn_segment_ids JSON into a list of ints."""
+    raw = route.get("bonn_segment_ids")
+    if not raw:
+        return []
+    try:
+        return [int(i) for i in json.loads(raw)]
+    except (ValueError, TypeError):
+        return []
 
 
 def clear_route_data(route_id: int) -> None:

@@ -354,11 +354,49 @@ async function loadToday() {
   const data = await r.json();
   DIRECTIONS.forEach((dir) => {
     renderIncidentBanner(dir, data[dir]);
+    renderLocalTraffic(dir, data[dir]);
     renderSummary(dir, data[dir]);
     renderRouteOptions(dir, data[dir]);
     renderAlternatives(dir, data[dir]);
     renderWindowHint(dir, data[dir]);
   });
+}
+
+function localTrafficClass(status) {
+  if (status === "Staugefahr") return "stau";
+  if (status === "erhöhte Verkehrsbelastung") return "erhoeht";
+  if (status === "aktuell nicht ermittelbar") return "unknown";
+  return "normal";
+}
+
+function renderLocalTraffic(direction, d) {
+  const el = document.querySelector(`.local-traffic[data-direction="${direction}"]`);
+  if (!el) return;
+  const lt = d?.local_traffic;
+  if (!lt || !lt.segment_count) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "block";
+  const chipCls = localTrafficClass(lt.worst_status);
+  const speed = lt.min_speed_kmh != null ? ` · slowest ${lt.min_speed_kmh} km/h` : "";
+  let detail = "";
+  if (lt.congested && lt.congested.length) {
+    const rows = lt.congested
+      .map((c) => {
+        const s = c.speed_kmh != null ? `${c.speed_kmh} km/h` : "—";
+        return `<li><span class="lt-dot ${localTrafficClass(c.status)}"></span>${c.status} · ${s}</li>`;
+      })
+      .join("");
+    detail = `<ul class="lt-segments">${rows}</ul>`;
+  }
+  el.innerHTML = `
+    <div class="lt-head">
+      <span class="lt-chip ${chipCls}">${lt.worst_status}</span>
+      <span class="lt-meta">${lt.segment_count} segment(s) on your route${speed}</span>
+    </div>
+    ${detail}
+    <div class="lt-attr">${lt.attribution || ""}</div>`;
 }
 
 function renderIncidentBanner(direction, d) {

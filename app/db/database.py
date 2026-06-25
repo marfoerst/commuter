@@ -68,6 +68,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # When set, typical/p90 and incident baselines ignore observations from
         # before this date so the pre-event world stops contaminating the stats.
         conn.execute("ALTER TABLE routes ADD COLUMN baseline_since TEXT")
+    if "bonn_segment_ids" not in cols:
+        # JSON list of Bonn open-data strecke_ids that lie along this route,
+        # computed by matching the route geometry to the live traffic feed at
+        # config/recompute time. Drives the live local-traffic panel + alerts.
+        conn.execute("ALTER TABLE routes ADD COLUMN bonn_segment_ids TEXT")
 
 
 def init_db() -> None:

@@ -23,7 +23,8 @@ commuter/
     ├── api/
     │   └── routes.py       ← all REST endpoints, including live re-rank logic
     ├── services/
-    │   ├── google_routes.py    ← Google Routes API v2 client (+ alternatives)
+    │   ├── google_routes.py    ← Google Routes API v2 client (+ alternatives, polyline)
+    │   ├── bonn_traffic.py     ← Bonn realtime feed: fetch/cache, polyline match, status
     │   ├── sampling.py         ← batch sampler (parallel, semaphore-bounded)
     │   ├── stats.py            ← pure stats: typical/p90, incident, window edge
     │   └── notify.py           ← opt-in push (ntfy / webhook)

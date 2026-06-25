@@ -31,3 +31,22 @@ NTFY_TOPIC_URL = os.environ.get("NTFY_TOPIC_URL", "").strip()  # e.g. https://nt
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip()  # generic JSON POST target
 PUSH_MIN_SEVERITY = os.environ.get("PUSH_MIN_SEVERITY", "alert").strip().lower()  # watch|alert
 PUSH_CHECK_MINUTES = int(os.environ.get("PUSH_CHECK_MINUTES", "15"))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+
+# Bonn real-time street-traffic open data (free, CC-BY, 5-min refresh). A live,
+# Bonn-local congestion signal that complements the Google-derived numbers and
+# feeds the incident logic. Segments are auto-matched to each route's geometry
+# once (at config/recompute time); the live path only does one cached GET.
+# See https://opendata.bonn.de/dataset/strassenverkehrslage-realtime
+BONN_TRAFFIC_ENABLED = _env_bool("BONN_TRAFFIC_ENABLED", True)
+BONN_TRAFFIC_URL = os.environ.get(
+    "BONN_TRAFFIC_URL", "https://stadtplan.bonn.de/geojson?Thema=19584"
+).strip()
+BONN_CACHE_SECONDS = int(os.environ.get("BONN_CACHE_SECONDS", "300"))
+# Segment-to-route matching tolerances (used only when (re)matching a route).
+BONN_MATCH_RADIUS_M = float(os.environ.get("BONN_MATCH_RADIUS_M", "40"))
+BONN_MATCH_MIN_FRACTION = float(os.environ.get("BONN_MATCH_MIN_FRACTION", "0.5"))

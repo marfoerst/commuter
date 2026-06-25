@@ -66,6 +66,56 @@ async def compute_route_duration(
     return round(seconds / 60.0, 1)
 
 
+async def fetch_route_polyline(
+    client: httpx.AsyncClient,
+    origin: str,
+    destination: str,
+) -> list[tuple[float, float]] | None:
+    """Fetch the route geometry as ``[(lat, lng), ...]``, or None on failure.
+
+    Used once when a route's origin/destination change (config save / recompute)
+    to auto-match Bonn traffic segments to the corridor. Geometry doesn't depend
+    on live traffic, so no departureTime is sent. Best-effort: returns None on
+    any error so matching simply leaves the previous segment list intact.
+    """
+    if not GOOGLE_API_KEY:
+        return None
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_API_KEY,
+        "X-Goog-FieldMask": "routes.polyline.encodedPolyline",
+    }
+    body = {
+        "origin": {"address": origin},
+        "destination": {"address": destination},
+        "travelMode": "DRIVE",
+    }
+
+    try:
+        resp = await client.post(ROUTES_URL, json=body, headers=headers, timeout=30.0)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        log.warning(
+            "Routes API (polyline) HTTP %s for %s -> %s: %s",
+            e.response.status_code, origin, destination, e.response.text[:300],
+        )
+        return None
+    except Exception as e:
+        log.warning("Routes API (polyline) call failed: %s", e)
+        return None
+
+    routes = resp.json().get("routes") or []
+    if not routes:
+        return None
+    encoded = ((routes[0].get("polyline") or {}).get("encodedPolyline")) or ""
+    # Local import avoids a circular dependency (bonn_traffic imports config only).
+    from app.services.bonn_traffic import decode_polyline
+
+    pts = decode_polyline(encoded)
+    return pts or None
+
+
 def _duration_to_minutes(duration_str: str | None) -> float | None:
     if not duration_str:
         return None

@@ -14,6 +14,7 @@ from app.db.models import (
     get_route_by_name,
     insert_commute_samples,
     insert_observations,
+    set_route_bonn_segments,
     upsert_named_route,
 )
 from app.services.sampling import WEEKDAYS
@@ -111,3 +112,67 @@ def test_live_probes_recorded_to_history(seeded):
             "SELECT COUNT(*) c FROM observations WHERE source='live'"
         ).fetchone()["c"]
     assert after > before
+
+
+def test_local_traffic_drives_incident_when_google_clear(monkeypatch):
+    """A Bonn 'Staugefahr' segment elevates incident_severity even when the live
+    Google probe matches typical (no Google-side incident)."""
+    import asyncio
+
+    now = datetime.now().astimezone()
+    if now.hour == 23 and now.minute >= 30:
+        pytest.skip("no future slot this late in the day")
+
+    init_db()
+    with get_conn() as conn:
+        conn.execute("DELETE FROM observations")
+        conn.execute("DELETE FROM commute_data")
+        conn.execute("DELETE FROM routes")
+
+    upsert_named_route(
+        "morning", "Home", "Office", "00:00", "23:30", 30, ",".join(WEEKDAYS)
+    )
+    route = get_route_by_name("morning")
+    today = WEEKDAYS[now.weekday()]
+    samples = [
+        {"day_of_week": today, "departure_time": s, "duration_minutes": 30.0}
+        for s in ALL_DAY_SLOTS
+    ]
+    insert_commute_samples(route["id"], samples)
+    for _ in range(5):
+        insert_observations(route["id"], samples, source="batch")
+    # This route's matched Bonn segment.
+    set_route_bonn_segments(route["id"], [42])
+    route = get_route_by_name("morning")  # reload with bonn_segment_ids
+
+    # Google clear: live == typical (30) → no Google-side incident.
+    async def fake_duration(client, origin, dest, dep_dt):
+        return 30.0
+
+    async def fake_alternatives(client, origin, dest, dep_dt, max_alternatives=3):
+        return []
+
+    # Bonn feed reports a jam on the matched segment.
+    async def fake_fetch_traffic(client):
+        return [
+            {
+                "geometry": {"type": "MultiLineString", "coordinates": [[[7.1, 50.7]]]},
+                "properties": {
+                    "strecke_id": 42,
+                    "auswertezeit": "2026-06-25T08:00:00Z",
+                    "geschwindigkeit": 6,
+                    "verkehrsstatus": "Staugefahr",
+                },
+            }
+        ]
+
+    monkeypatch.setattr(routes_mod, "compute_route_duration", fake_duration)
+    monkeypatch.setattr(routes_mod, "compute_route_alternatives", fake_alternatives)
+    monkeypatch.setattr(routes_mod, "fetch_traffic", fake_fetch_traffic)
+
+    payload = asyncio.run(_run(route))
+
+    assert payload["local_traffic"]["worst_status"] == "Staugefahr"
+    assert payload["local_traffic"]["min_speed_kmh"] == 6
+    assert payload["incident_severity"] == "alert"
+    assert "Bonn live traffic" in payload["incident_note"]

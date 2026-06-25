@@ -91,6 +91,29 @@ h2 {
 .incident-banner.alert { background: #2c1717; color: #ff7676; border-color: #4a1f1f; }
 .incident-banner .icon { margin-right: 6px; }
 
+.local-traffic {
+  margin-bottom: 12px; padding: 10px 14px; border-radius: 8px;
+  font-size: 13px; background: #131722; border: 1px solid #222831;
+}
+.local-traffic .lt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.local-traffic .lt-meta { color: #9aa0a6; font-size: 12px; }
+.lt-chip {
+  font-size: 11px; font-weight: 600; border-radius: 999px; padding: 2px 9px;
+  border: 1px solid transparent;
+}
+.lt-chip.normal { background: #15251a; color: #5fd07a; border-color: #2f5a3a; }
+.lt-chip.erhoeht { background: #2c2417; color: #f5b347; border-color: #4a3a1f; }
+.lt-chip.stau { background: #2c1717; color: #ff7676; border-color: #4a1f1f; }
+.lt-chip.unknown { background: #1b1f27; color: #9aa0a6; border-color: #2a2d33; }
+.lt-segments { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; color: #c2c8d0; }
+.lt-segments li { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
+.lt-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.lt-dot.normal { background: #5fd07a; }
+.lt-dot.erhoeht { background: #f5b347; }
+.lt-dot.stau { background: #ff7676; }
+.lt-dot.unknown { background: #6b7280; }
+.lt-attr { margin-top: 8px; font-size: 10px; color: #6b7280; }
+
 .card .sub { font-size: 12px; color: #6b7280; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .reliability-note {
   grid-column: 1 / -1; font-size: 12px; color: #f5b347; margin: 2px 0 0;

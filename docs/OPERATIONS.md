@@ -106,6 +106,33 @@ Note: this is not a labeled incident feed from Google. It does not
 tell you what or where the incident is — only that your route is taking
 materially longer than typical. For specifics, fall back to Google Maps.
 
+### Bonn local-traffic signal (free, zero Google cost)
+
+When `BONN_TRAFFIC_ENABLED` is on (default), the app also reads the free, CC-BY
+[Bonn realtime traffic feed](https://opendata.bonn.de/dataset/strassenverkehrslage-realtime)
+— per-segment status (`Staugefahr` / `erhöhte Verkehrsbelastung` / `normal` /
+`nicht ermittelbar`) and speed for Bonn's Rhine bridges and main arterials,
+refreshed every 5 minutes.
+
+- **Matching is one-time, not per-request.** When a route's addresses change
+  (config save) or on recompute, the app fetches the route polyline once and
+  matches Bonn segments to it geographically, storing the matched `strecke_id`s
+  on the route (`bonn_segment_ids`). The match is stable because it depends on
+  the corridor, not on live traffic.
+- **The live path costs nothing extra from Google.** A `/today` request does one
+  cached GET of the Bonn feed (shared across both directions, TTL
+  `BONN_CACHE_SECONDS`, default 300 s) and looks up the stored segments — no
+  additional Routes API calls.
+- **It folds into incidents.** Bonn severity (`Staugefahr` → alert,
+  `erhöhte Verkehrsbelastung` → watch) is combined worst-of with the
+  Google-derived severity, so proactive push fires on Bonn-side congestion too.
+- **Graceful + opt-out.** Routes outside Bonn match nothing and the
+  `local_traffic` field is simply absent; any feed/parse failure is ignored.
+  Set `BONN_TRAFFIC_ENABLED=false` to disable entirely.
+- **Attribution.** The CC-BY licence requires showing
+  "Datenquelle: Bundesstadt Bonn, Amt 66" — the app includes it in the payload
+  and renders it under the dashboard panel.
+
 ### Observation history, typical/p90, and baseline reset
 
 `commute_data` holds only the latest forecast per slot (it's replaced each day).

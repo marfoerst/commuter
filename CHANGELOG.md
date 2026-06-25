@@ -4,6 +4,25 @@ All notable changes to the Commute Optimizer.
 
 ## [Unreleased]
 
+### Added — Bonn real-time local traffic
+
+- **Live local-traffic signal (Bonn open data)** — integrates the free, CC-BY
+  [Straßenverkehrslage-Realtime](https://opendata.bonn.de/dataset/strassenverkehrslage-realtime)
+  GeoJSON feed (Bonn's three Rhine bridges + major arterials, refreshed every
+  5 min). The Bonn road segments that lie along each route are **auto-matched**
+  to the Google route geometry once at config/recompute time and persisted
+  (`routes.bonn_segment_ids`), so the live path adds **zero** Google cost — it
+  only does one cached GET of the feed.
+- **`local_traffic` in the today payload** — worst status, slowest measured
+  speed, and the congested segments for the matched corridor, plus the required
+  attribution string. Rendered as a per-direction panel on the dashboard.
+- **Bonn folds into incident alerts** — `Staugefahr` → `alert`,
+  `erhöhte Verkehrsbelastung` → `watch`; combined worst-of with the
+  Google-derived severity, so existing push notifications fire on Bonn-side
+  congestion too. Opt-out via `BONN_TRAFFIC_ENABLED=false`. Tunable with
+  `BONN_TRAFFIC_URL`, `BONN_CACHE_SECONDS`, `BONN_MATCH_RADIUS_M`,
+  `BONN_MATCH_MIN_FRACTION`.
+
 ### Added — traffic-disruption resilience
 
 Motivated by a multi-year Bonn bridge closure: when a corridor's normal

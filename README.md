@@ -112,6 +112,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 | `PUSH_CHECK_MINUTES`        | `15`                   | In-window push check interval                 |
 | `TZ`                        | `UTC`                  | Container time zone                           |
 | `DATA_DIR`                  | `/app/data`            | SQLite + persistence path                     |
+| `BONN_TRAFFIC_ENABLED`      | `true`                 | Enable the Bonn live local-traffic signal     |
+| `BONN_TRAFFIC_URL`          | _(Bonn feed)_          | GeoJSON endpoint for the realtime feed         |
+| `BONN_CACHE_SECONDS`        | `300`                  | Feed cache TTL (feed refreshes every 5 min)    |
+| `BONN_MATCH_RADIUS_M`       | `40`                   | Segment↔route match radius (metres)            |
+| `BONN_MATCH_MIN_FRACTION`   | `0.5`                  | Min fraction of a segment near the route       |
 
 Push is opt-in: the periodic check only runs (and only spends Routes API calls)
 when `NTFY_TOPIC_URL` or `WEBHOOK_URL` is set **and** a commute window is open.
@@ -209,10 +214,38 @@ The payload also carries, when data is available:
   and p90 drive for the chosen slot, and the median→p90 spread to pad for.
 - `window_hint` — `{ "edge": "early"|"late", "slot": "07:00", "message": … }`
   or `null`, suggesting the sampling window be widened.
+- `local_traffic` — present only for routes through Bonn that matched segments in
+  the [Bonn realtime feed](https://opendata.bonn.de/dataset/strassenverkehrslage-realtime):
+
+  ```json
+  "local_traffic": {
+    "source": "Bonn open-data",
+    "evaluated_at": "2026-06-25T10:50:00Z",
+    "severity": "alert",
+    "worst_status": "Staugefahr",
+    "min_speed_kmh": 5,
+    "segment_count": 6,
+    "congested": [ { "strecke_id": 72, "status": "Staugefahr", "speed_kmh": 5 } ],
+    "attribution": "Datenquelle: Bundesstadt Bonn, Amt 66"
+  }
+  ```
 
 Incident fields (`incident_severity`, `incident_delta_minutes`, `incident_note`)
 compare live to the slot's *typical* drive once enough history has accumulated,
-falling back to the morning forecast before then.
+falling back to the morning forecast before then. When the Bonn feed is enabled,
+its segment status (`Staugefahr` → alert, `erhöhte Verkehrsbelastung` → watch)
+is combined worst-of into `incident_severity` (so push alerts fire on it too);
+`incident_delta_minutes` remains the Google-derived value.
+
+### Bonn local-traffic source
+
+When `BONN_TRAFFIC_ENABLED` is on (default), routes passing through Bonn are
+auto-matched to the free, CC-BY realtime traffic feed once at config/recompute
+time (matched `strecke_id`s are persisted per route). Live requests then only do
+one cached GET of the feed — **no extra Google Routes API cost**. Routes outside
+Bonn match nothing and the panel/field stay absent. Attribution
+("Datenquelle: Bundesstadt Bonn, Amt 66") is included in the payload and shown
+in the UI, as the CC-BY licence requires.
 
 ### `GET /api/commute/today/{direction}`
 
